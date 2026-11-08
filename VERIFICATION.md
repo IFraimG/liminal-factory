@@ -77,3 +77,5 @@ Apple Developer signing/notarization; test external binaries and Unity licensing
 - Set the local app to the verified `Profile 9` through Settings. User cookie values were not printed, exported or committed.
 - Metadata extraction for the failing video `ulyhIyFXCyQ` succeeded with `chrome:Profile 9`. Then the actual audio pipeline downloaded a five-second excerpt (73,124-byte MP3) and produced FFprobe/RMS/FFT analysis. No API key was used. This confirms media download, not only listing metadata.
 - **73 automated tests pass**, including automatic active-profile selection, missing/malformed profile state, explicit override and no cookie export. Release app build passed.
+
+- After installing the rebuilt app, retried the actual episode audio task with the saved Chrome profile. The native UI confirmed **Audio Reference → Completed** after 109 seconds; `reference.mp3` (2,709,620 bytes) and `audio_analysis.json` passed artifact validation. Music Brief started next. The temporarily cancelled visual waiting task was restored to Waiting for Client. Previous error entries remain historical logs.
