@@ -52,7 +52,7 @@ async def test_rejects_shell_or_other_cli(tmp_path):
 
 async def test_opens_client_waits_and_sends_nothing_before_confirmation(tmp_path):
     session=ClientFixture(tmp_path,wait_seconds=.04);adapter=AntigravityAdapter(session)
-    with pytest.raises(ClientSessionError,match='Timed out'):
+    with pytest.raises(ClientSessionError,match='No CLI connection'):
         await adapter.launch(tmp_path,'Task','result.json',lambda _:None)
     assert session.opened==1
     assert not any(c[0] in ('send','run','kill','interrupt','agent','pane') for c in session.calls)
@@ -181,3 +181,63 @@ async def test_completed_cli_can_accept_next_task_without_forcing_a_dialog(tmp_p
     sends=[c for c in session.calls if c[0]=='send']
     assert len(sends)==1 and '--force' not in sends[0]
     assert '--if' not in sends[0]  # Core supports no --if done flag.
+
+def mark_client_launcher(session,root):
+    session.expected_cwd=root.resolve()
+    session.terminal['argv']=[str(session.agy)]
+    session.terminal['pid']=session.terminal['foreground']['pid']
+    session.terminal['labels']={'liminal_factory':'antigravity-client-launch','launch_id':'a'*32}
+
+async def test_launcher_pane_reconnects_after_app_restart(tmp_path):
+    first=ClientFixture(tmp_path);mark_client_launcher(first,tmp_path)
+    assert (await first.status())['bound_target']=='t7'
+    assert first.binding['origin']=='client-launcher'
+    nonce=first.binding['nonce']
+    restarted=ClientFixture(tmp_path);mark_client_launcher(restarted,tmp_path)
+    value=await AntigravityAdapter(restarted).launch(tmp_path,'Task','auto.json',lambda _:None)
+    assert value['brief']=='A quiet atmosphere'
+    assert restarted.binding['nonce']!=nonce
+    assert not any(c[0] in ('run','kill','agent','pane') for c in restarted.calls)
+
+@pytest.mark.parametrize('change',['unmarked','wrong-cwd','shell','bad-id','blocked'])
+async def test_auto_connection_rejects_unproven_or_unready_panes(tmp_path,change):
+    s=ClientFixture(tmp_path);mark_client_launcher(s,tmp_path)
+    if change=='unmarked': s.terminal['labels']={}
+    if change=='wrong-cwd': s.terminal['cwd']=str(tmp_path/'other')
+    if change=='shell': s.terminal['foreground']['argv']=['/bin/zsh']
+    if change=='bad-id': s.terminal['labels']['launch_id']='not-a-launch-id'
+    if change=='blocked': s.terminal['status']['state']='blocked'
+    assert not await s.auto_connect()
+    assert not s.binding and not s.sent.is_set()
+
+async def test_auto_connection_never_guesses_between_launches(tmp_path):
+    s=ClientFixture(tmp_path);mark_client_launcher(s,tmp_path)
+    original=s.command
+    async def command(*args,**kwargs):
+        if args[0]=='ls': return {'terminals':[{'address':'t7'},{'address':'t8'}]}
+        t=await original(*args,**kwargs)
+        if args[0]=='get': t['address']=args[1]
+        return t
+    s.command=command
+    assert not await s.auto_connect() and not s.binding
+
+async def test_manual_disconnect_is_respected_until_prepare(tmp_path):
+    s=ClientFixture(tmp_path);mark_client_launcher(s,tmp_path)
+    assert await s.auto_connect()
+    s.unbind(manual=True)
+    assert not await s.auto_connect()
+    assert (await s.status())['bound_target'] is None
+    assert (await s.prepare())['bound_target']=='t7'
+
+async def test_replacement_launcher_gets_new_identity_before_next_prompt(tmp_path):
+    s=ClientFixture(tmp_path);mark_client_launcher(s,tmp_path)
+    await s.auto_connect();old=s.binding.copy()
+    s.terminal['foreground']['pid']+=1;s.terminal['created_ms']+=1
+    with pytest.raises(ClientSessionError,match='another process'): await s.verify()
+    # A shell child replacement isn't a new launcher grant. Require the root
+    # terminal pid to agree with the actual foreground CLI as well.
+    assert not await s.auto_connect()
+    s.terminal['pid']=s.terminal['foreground']['pid']
+    s.terminal['labels']['launch_id']='b'*32
+    assert await s.auto_connect()
+    assert s.binding['pid']!=old['pid'] and s.binding['nonce']!=old['nonce']

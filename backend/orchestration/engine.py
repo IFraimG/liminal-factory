@@ -26,7 +26,7 @@ class Engine:
         return value
     def client_session(self):
         if self._client_session is None:
-            self._client_session=AntigravitySession(self.tool('hc'),self.settings.tools.get('agy'),self.settings.antigravity_port,self.settings.antigravity_wait_seconds)
+            self._client_session=AntigravitySession(self.tool('hc'),self.settings.tools.get('agy'),self.settings.antigravity_port,self.settings.antigravity_wait_seconds,expected_cwd=self.root)
         return self._client_session
     def herdr(self,task=''):
         if self.adapter: return self.adapter

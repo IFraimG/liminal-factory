@@ -79,3 +79,12 @@ Apple Developer signing/notarization; test external binaries and Unity licensing
 - **73 automated tests pass**, including automatic active-profile selection, missing/malformed profile state, explicit override and no cookie export. Release app build passed.
 
 - After installing the rebuilt app, retried the actual episode audio task with the saved Chrome profile. The native UI confirmed **Audio Reference → Completed** after 109 seconds; `reference.mp3` (2,709,620 bytes) and `audio_analysis.json` passed artifact validation. Music Brief started next. The temporarily cancelled visual waiting task was restored to Waiting for Client. Previous error entries remain historical logs.
+
+## Automatic Client launcher reconnection
+
+- Repeated timeouts occurred because the active CLI was replaced (`t5` → `t7`) while binding grants were memory-only. A live CLI alone did not establish a new application binding.
+- A single idle/done terminal created by the existing external Client launcher is now discovered and connected automatically. Checks include launcher labels and launch ID, original argv, live foreground executable, matching terminal/foreground PID, expected project directory and Client proxy. Reconnection always creates a fresh nonce; saved PIDs never authorize process control.
+- Unmarked terminals, multiple marked launches, shells, different directories and blocked/busy terminals are not auto-selected. Manual selection is retained. Explicit Disconnect suppresses discovery until Prepare or manual Connect is requested.
+- A real read-only discovery with a new adapter instance found `t7` and returned Ready with `connection_origin=client-launcher`, without sending a prompt or launching a process.
+- **82 tests pass**, covering restart discovery, ambiguity, unproven/busy sessions, explicit disconnect, replacement identity and existing serialization/cancellation safeguards. Frontend build passes.
+- Rebuilt and reopened the native app while the existing `t7` CLI remained running. Settings changed from Checking to **Ready / Connected to t7** without pane selection, an origin checkbox or Connect click. Retried Visual Reference: the UI showed **Running · agy · t7** and the live CLI reported working. Music Brief was also retried and queued behind the same session lock. Release app build passed.

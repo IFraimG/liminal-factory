@@ -13,9 +13,11 @@ CLIENT=Path('/Applications/Antigravity Client.app')
 class ClientSessionError(RuntimeError): pass
 
 class AntigravitySession:
-    def __init__(self,hc='hc',agy=None,port=8047,wait_seconds=300):
+    def __init__(self,hc='hc',agy=None,port=8047,wait_seconds=300,expected_cwd=None):
         self.hc=hc; self.agy=Path(agy or Path.home()/'.local/bin/agy').resolve()
         self.port=port; self.wait_seconds=wait_seconds
+        self.expected_cwd=Path(expected_cwd).expanduser().resolve() if expected_cwd else None
+        self.discovery_lock=asyncio.Lock(); self.auto_connect_enabled=True
         self.binding=None; self.in_flight=False; self.ready=asyncio.Event(); self.lock=asyncio.Lock(); self.open_lock=asyncio.Lock(); self.last_open=0
     async def command(self,*args,raw=False):
         text=await run([self.hc,*args],timeout=30)
@@ -45,7 +47,9 @@ class AntigravitySession:
             await run(['/usr/bin/open','-a',str(CLIENT)],timeout=15)
             self.last_open=time.monotonic()
     async def prepare(self):
+        self.auto_connect_enabled=True
         await self.check()
+        await self.auto_connect()
         if not self.binding or not await self.health(): await self.open_client()
         return await self.status()
     def fingerprint(self,terminal):
@@ -69,6 +73,40 @@ class AntigravitySession:
             except (RuntimeError,ValueError,KeyError,OSError): continue
             result.append({'address':fp['address'],'state':self.word(terminal) or 'unknown','cwd':terminal.get('cwd','')})
         return result
+    def launcher_origin(self,terminal):
+        labels=terminal.get('labels') or {}
+        argv=terminal.get('argv') or []
+        return (self.expected_cwd is not None
+            and labels.get('liminal_factory')=='antigravity-client-launch'
+            and isinstance(labels.get('launch_id'),str)
+            and re.fullmatch(r'[0-9a-f]{32}',labels['launch_id']) is not None
+            and bool(argv) and Path(argv[0]).expanduser().resolve()==self.agy
+            and terminal.get('pid')==(terminal.get('foreground') or {}).get('pid')
+            and Path(terminal.get('cwd') or '/').resolve()==self.expected_cwd)
+    async def auto_connect(self):
+        # Only our external Client launcher supplies this origin marker. Never
+        # adopt a plain shell/Gemini pane or choose between multiple launches.
+        async with self.discovery_lock:
+            if self.binding or self.in_flight or not self.auto_connect_enabled or not await self.health(): return False
+            listing=await self.command('ls','--json'); matches=[]
+            for row in listing.get('terminals',[]):
+                target=row.get('address','')
+                if not re.fullmatch(r't[0-9a-z]+',target): continue
+                try:
+                    terminal=await self.command('get',target,'--json')
+                    fp=self.fingerprint(terminal)
+                    if self.launcher_origin(terminal): matches.append((terminal,fp))
+                except (RuntimeError,ValueError,KeyError,OSError): continue
+            # Busy/blocked launches also count: never guess a different pane.
+            if len(matches)!=1: return False
+            terminal,fp=matches[0]
+            if self.word(terminal) not in {'idle','done'}: return False
+            current=await self.command('get',fp['address'],'--json')
+            if (self.fingerprint(current)!=fp or not self.launcher_origin(current)
+                or current['labels']['launch_id']!=terminal['labels']['launch_id']
+                or self.word(current) not in {'idle','done'}): return False
+            self.binding={**fp,'nonce':uuid.uuid4().hex,'origin':'client-launcher'}
+            self.ready.set(); return True
     async def bind(self,target,confirmed):
         if confirmed is not True: raise ClientSessionError('Confirm that you launched this CLI with the Antigravity Client button')
         if self.in_flight: raise ClientSessionError('Wait for the current Client task to finish before changing its pane')
@@ -77,9 +115,11 @@ class AntigravitySession:
         terminal=await self.command('get',target,'--json'); fp=self.fingerprint(terminal)
         if self.word(terminal) not in {'idle','done'}: raise ClientSessionError('The selected CLI must report idle or done; finish its work or resolve its dialog manually')
         # Never persist this grant: every app restart and replacement process needs a fresh confirmation.
-        self.binding={**fp,'nonce':uuid.uuid4().hex}; self.ready.set()
+        self.binding={**fp,'nonce':uuid.uuid4().hex,'origin':'user-confirmed'}; self.auto_connect_enabled=True; self.ready.set()
         return {'address':fp['address'],'state':'Ready'}
-    def unbind(self): self.binding=None; self.ready.clear()
+    def unbind(self,manual=False):
+        self.binding=None; self.ready.clear()
+        if manual: self.auto_connect_enabled=False
     async def verify(self,identity=None):
         binding=self.binding
         if not binding: raise ClientSessionError('Waiting for a Client-launched CLI. Open Settings → Antigravity Client and connect its Herdr pane.')
@@ -100,22 +140,25 @@ class AntigravitySession:
         deadline=time.monotonic()+self.wait_seconds
         await self.prepare()
         while time.monotonic()<deadline:
+            await self.auto_connect()
             if self.binding:
                 terminal=await self.verify()
                 if self.word(terminal) not in {'idle','done'}: raise ClientSessionError('The connected CLI is busy or blocked. No prompt was sent.')
                 return terminal
             try: await asyncio.wait_for(self.ready.wait(),min(2,max(.01,deadline-time.monotonic())))
             except asyncio.TimeoutError: pass
-        raise ClientSessionError('Timed out waiting for your CLI launch in Antigravity Client. Connect its idle Herdr pane in Settings and Retry Task. No direct process was started.')
+        raise ClientSessionError('No CLI connection was established. Client-launched panes from the Liminal launcher connect automatically when idle. For unmarked or multiple panes, select one in Settings → Connect existing CLI, then Retry Task. No direct process was started.')
     async def status(self):
         proxy=await self.health(); error=''; candidates=[]
         try:
             candidates=await self.candidates()
             if self.binding: await self.verify()
+            else: await self.auto_connect()
         except (RuntimeError,ValueError,OSError,KeyError) as exc: error=str(exc)
         return {'state':'Ready' if self.binding and proxy else 'Waiting for CLI' if proxy else 'Waiting for Client',
                 'proxy_ready':proxy,'bound_target':self.binding['address'] if self.binding else None,'candidates':candidates,'message':error,
-                'note':'Origin is confirmed by you; process identity and proxy availability are checked automatically. No credentials are read.'}
+                'connection_origin':self.binding.get('origin') if self.binding else None,
+                'note':'Client launcher origin, live process and proxy are checked automatically. Unmarked or multiple panes require manual selection. No credentials are read.'}
 
 class AntigravityAdapter:
     """One existing session; prompts are serialized and the user's pane is never closed."""

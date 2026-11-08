@@ -125,7 +125,7 @@ async def client_bind(request:Request):
 async def client_unbind():
     session=engine.client_session()
     if session.in_flight: raise ClientSessionError('Cancel or finish the active Client task before disconnecting')
-    session.unbind(); return {'ok':True}
+    session.unbind(manual=True); return {'ok':True}
 
 @app.get('/episodes')
 async def episodes():
