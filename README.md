@@ -229,7 +229,7 @@ Launcher напечатает адрес созданного терминала
 
 Google Cloud и YouTube Data API key не нужны. Заголовки публичных видео, Shorts и трансляций канала извлекает yt-dlp: корневой URL канала, `--flat-playlist --skip-download --dump-single-json`, автоматическое чтение страниц продолжения. Аудио скачивается отдельной задачей и не зависит от сбора заголовков.
 
-Settings → YouTube download session позволяет использовать cookies установленного Google Chrome для скачивания и чтения канала. Cookies не экспортируются в файл. При необходимости задайте папку профиля, например `Default` или `Profile 1`. Содержимое авторизованной сессии остаётся у yt-dlp.
+Settings → YouTube download session позволяет использовать cookies установленного Google Chrome для скачивания и чтения канала. Cookies не экспортируются в файл. Пустое поле выбирает `profile.last_used` из настроек Chrome; если определить его нельзя, приложение просит явно указать профиль вместо использования другой сессии. Для фиксированной сессии задайте папку профиля, например `Default` или `Profile 1`. Содержимое авторизованной сессии остаётся у yt-dlp.
 
 Кэш публичных заголовков задаётся в Settings → Channel cache (hours); 0 отключает повторное использование. Одинаковые video ID исключаются, исходный текст заголовков сохраняется. Закрытые и недоступные публикации не гарантируются. Ошибка сети или извлечения останавливает задачу канала с диагностикой; неполный результат не записывается как успешный кэш. Ошибка канала не блокирует независимую задачу загрузки аудио. Ранее сохранённый API key не используется и не требуется.
 
@@ -394,3 +394,9 @@ LIMINAL_DATA="$PWD/work/local-session" npm run tauri dev
 - [Herdr agent automation](https://herdr.dev/tui/docs/agent-automation/) и [CLI reference](https://herdr.dev/tui/docs/cli-reference/)
 - [Tauri 2 — external binaries](https://v2.tauri.app/develop/sidecar/) и [resources](https://v2.tauri.app/develop/resources/)
 - [YouTube playlistItems.list](https://developers.google.com/youtube/data/reference/rest/v3/playlistItems/list)
+
+### YouTube просит подтвердить, что вы не бот
+
+Если лог уже содержит `Extracting cookies from chrome`, флаг `--cookies-from-browser` включён. Проверьте **Settings → Chrome profile folder**: при нескольких профилях требуется профиль, где открыто видео и выполнен вход в YouTube. Пустое поле использует последний выбранный профиль Chrome, явное значение фиксирует сессию. Сохраните настройки и нажмите **Retry Task** для Audio Reference. Изменение настроек требует завершить либо отменить текущие выполняющиеся/ожидающие задачи; затем отменённые задачи можно повторить.
+
+HTTP 429 означает ограничение запросов со стороны YouTube. Правильные cookies не гарантируют снятия такого ограничения: не повторяйте загрузку подряд при сохраняющейся ошибке, проверьте доступ к видео в том же Chrome. [Официальная инструкция yt-dlp по cookies](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies).

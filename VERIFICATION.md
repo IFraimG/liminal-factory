@@ -69,3 +69,11 @@ Apple Developer signing/notarization; test external binaries and Unity licensing
 - Channel extraction shares the existing, user-authorized Chrome profile setting. Subprocess stdout JSON is separated from stderr diagnostics so redaction never corrupts titles; errors and diagnostic logs are redacted.
 - Real metadata-only verification on `https://www.youtube.com/@midwichmusic`: **322 titles**, **20.7 seconds**, Chrome cookies enabled, **no API key**. No audio or model generation was initiated in this check. See `outputs/youtube-channel-verification.json`.
 - **69 tests pass**, including no-key production preflight, nested channel tabs/cache expiry, malformed output rejection, URL validation before browser access, and separate JSON/diagnostic handling. Frontend compilation and release app build passed.
+
+## Chrome profile selection corrected
+
+- `--cookies-from-browser` was already present in the failed audio download. Chrome has multiple profiles; yt-dlp's default cookie database selection does not reliably select Chrome's active profile.
+- Blank profile now resolves Chrome's own `profile.last_used` and validates the folder. If unavailable or invalid, extraction requests explicit configuration instead of silently selecting another session. An explicit profile remains authoritative.
+- Set the local app to the verified `Profile 9` through Settings. User cookie values were not printed, exported or committed.
+- Metadata extraction for the failing video `ulyhIyFXCyQ` succeeded with `chrome:Profile 9`. Then the actual audio pipeline downloaded a five-second excerpt (73,124-byte MP3) and produced FFprobe/RMS/FFT analysis. No API key was used. This confirms media download, not only listing metadata.
+- **73 automated tests pass**, including automatic active-profile selection, missing/malformed profile state, explicit override and no cookie export. Release app build passed.

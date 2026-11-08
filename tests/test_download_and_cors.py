@@ -61,9 +61,13 @@ def test_cookie_profile_cannot_inject_options_or_paths(profile):
     with pytest.raises(ValueError): chrome_cookie_args(True,profile)
     with pytest.raises(ValidationError): Settings(yt_dlp_chrome_profile=profile)
 
-def test_chrome_cookie_flag_has_no_export_file():
+def test_chrome_cookie_flag_has_no_export_file(tmp_path,monkeypatch):
     assert chrome_cookie_args()==[]
-    assert chrome_cookie_args(True)==['--cookies-from-browser','chrome']
+    root=tmp_path/'Library/Application Support/Google/Chrome'
+    (root/'Profile 9').mkdir(parents=True)
+    (root/'Local State').write_text('{"profile":{"last_used":"Profile 9"}}')
+    monkeypatch.setattr(Path,'home',lambda:tmp_path)
+    assert chrome_cookie_args(True)==['--cookies-from-browser','chrome:Profile 9']
     assert chrome_cookie_args(True,'Profile 1')==['--cookies-from-browser','chrome:Profile 1']
 
 async def test_download_argv_is_explicit_and_honors_cookie_choice(tmp_path,monkeypatch):
@@ -94,3 +98,12 @@ async def test_process_logs_and_error_redact_cookie_and_signed_url(tmp_path):
     for text in (str(error.value),log.read_text()):
         assert 'fake-cookie-secret' not in text and 'fake-auth-secret' not in text and 'fake-url-secret' not in text
         assert '[redacted]' in text
+
+@pytest.mark.parametrize('content',['{}','invalid','{"profile":{"last_used":"../escape"}}','{"profile":{"last_used":"Profile 8"}}'])
+def test_automatic_profile_never_silently_uses_another_session(tmp_path,monkeypatch,content):
+    root=tmp_path/'Library/Application Support/Google/Chrome';root.mkdir(parents=True)
+    (root/'Local State').write_text(content)
+    monkeypatch.setattr(Path,'home',lambda:tmp_path)
+    with pytest.raises(ValueError,match='Chrome profile'): chrome_cookie_args(True)
+    assert chrome_cookie_args(False)==[]
+    assert chrome_cookie_args(True,'Default')==['--cookies-from-browser','chrome:Default']
