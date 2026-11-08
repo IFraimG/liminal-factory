@@ -1,3 +1,4 @@
+from typing import Literal
 from enum import StrEnum
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -71,9 +72,25 @@ class Settings(BaseModel):
         if v not in {'codex','gemini','antigravity'}: raise ValueError('Use codex or antigravity')
         return v
 
+class SunoOptions(BaseModel):
+    exclude_styles: str=Field(min_length=1,max_length=1000)
+    weirdness: int=Field(ge=0,le=100)
+    style_influence: int=Field(ge=0,le=100)
+    variety: Literal['off','normal','high','extra','max']
+    duration_seconds: int=Field(ge=30,le=600)
+    max_mode: bool
+    personalize: Literal['off']
+    vocal_gender: Literal['none']
+    rationale: str=Field(min_length=20,max_length=2000)
+
 class MusicBrief(BaseModel):
     brief: str=Field(min_length=10)
     prompts: list[str]=Field(min_length=2,max_length=8)
+    suno_options: SunoOptions|None=None
+
+class SunoMusicBrief(MusicBrief):
+    suno_options: SunoOptions
+
 class VisualBrief(BaseModel):
     architecture: str
     composition: str

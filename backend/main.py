@@ -221,6 +221,14 @@ async def references(e:str,request:Request):
     for name in set(old)-set(names): contained(root,name).unlink()
     manifest.write_text(json.dumps(names)); return {'ok':True}
 
+@app.post('/episodes/{e}/suno/options')
+async def suno_options(e:str):
+    store.config(e)
+    if store.task(e,'music_approval')['status']!='Waiting for Approval':
+        raise ValueError('Music must be awaiting approval before requesting More Options')
+    await engine.request_changes(e,'music_approval','Add mandatory structured suno_options to the existing music_brief.json. Keep its brief and prompts exactly unchanged. Derive every option from that musical intent; explain choices in rationale. Do not visit Suno or generate/download music.')
+    return {'state':'Queued','note':'Agent will add More Options to the existing brief. Wait for Music Approval again.'}
+
 @app.post('/episodes/{e}/suno/prepare')
 async def suno_prepare(e:str,request:Request):
     from backend.integrations.suno import SunoDraftRequest,prepare_draft

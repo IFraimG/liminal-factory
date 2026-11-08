@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Liminal Suno Prep",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Verify the Suno account and prepare an instrumental form. You click Create. No generation or downloads.",
   "content_scripts": [{
     "matches": ["https://suno.com/*"],

@@ -18,11 +18,12 @@ class SunoDraftRequest(BaseModel):
 def prepare_draft(root,config,request:SunoDraftRequest):
     brief=MusicBrief.model_validate_json((root/'music_brief.json').read_text())
     if request.prompt_index>=len(brief.prompts): raise ValueError('Choose an existing Suno prompt')
+    if brief.suno_options is None: raise ValueError('More Options are required. Ask the agent to update this music brief with Suno settings first.')
     styles='Instrumental only, no vocals. '+brief.prompts[request.prompt_index].strip()
     if len(styles)>1000: raise ValueError('Shorten this prompt to fit the 1000-character Suno Styles field')
-    draft={'version':1,'id':uuid.uuid4().hex,'account_email':request.account_email,
+    draft={'version':2,'id':uuid.uuid4().hex,'account_email':request.account_email,
            'title':config['name'].strip(),'styles':styles,'instrumental':True,
-           'mode':'prepare_only','created':int(time.time())}
+           'mode':'prepare_only','created':int(time.time()),'more_options':brief.suno_options.model_dump()}
     raw=json.dumps(draft,ensure_ascii=False,separators=(',',':')).encode()
     encoded=base64.urlsafe_b64encode(raw).decode().rstrip('=')
     (root/'suno_draft.json').write_text(json.dumps(draft,ensure_ascii=False,indent=2))

@@ -3,7 +3,7 @@ from pathlib import Path
 from backend.orchestration.workflow import DAG,GATES,AGENT_TASKS
 from backend.orchestration.herdr_adapter import HerdrAdapter
 from backend.integrations.antigravity import AntigravitySession,AntigravityAdapter
-from backend.models.schema import MusicBrief,VisualBrief,Metadata,SceneSpec
+from backend.models.schema import MusicBrief,SunoMusicBrief,VisualBrief,Metadata,SceneSpec
 from backend.integrations.process import checksum,contained,PROCESS_OBSERVER
 from backend.integrations.unity import Unity
 from backend.integrations.youtube import channel_titles
@@ -147,7 +147,7 @@ class Engine:
         c=self.store.config(e); root=self.directory(e)
         if n=='audio_reference': return await analyze(root,c,self.tool,self.settings.yt_dlp_use_chrome_cookies,self.settings.yt_dlp_chrome_profile)
         if n=='music_brief':
-            return await self.ask(e,n,'Read audio_analysis.json (technical analysis only). Create an original ambient music brief and at least 2 Suno prompts for '+c['style']+'. Do not claim you listened to audio.',MusicBrief)
+            return await self.ask(e,n,'Read audio_analysis.json (technical analysis only). Create an original ambient music brief and at least 2 Suno prompts for '+c['style']+'. Do not claim you listened to audio. Include required suno_options for Suno More Options: excluded styles, Weirdness and Style Influence (0–100), Variety (off/normal/high/extra/max), duration_seconds (30–600), Max Mode boolean, personalize off, vocal_gender none for instrumental. Explain why every choice fits the musical brief and measurements in rationale. These are generation settings, not measured properties. Do not blindly use defaults. If an existing music_brief.json is present and feedback requests only More Options, keep its brief and prompts exactly and add the settings.',SunoMusicBrief)
         if n=='visual_reference':
             if not self.settings.vision_enabled: raise RuntimeError('Visual analysis unavailable: configure an image-capable agent/model and enable vision in Settings')
             images=[str(contained(root,p)) for p in json.loads((root/'references.json').read_text())]
