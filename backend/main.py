@@ -9,8 +9,10 @@ from backend.models.schema import EpisodeInput,Settings,MusicBrief
 from backend.storage.db import Store
 from backend.orchestration.engine import Engine
 from backend.orchestration.workflow import DAG
+from backend.orchestration.herdr_adapter import HerdrAdapter
 from backend.integrations.process import contained,run,checksum
 from backend.integrations.unity import discover
+from backend.integrations.antigravity import ClientSessionError
 from backend.integrations.secrets import secret
 
 HOME=Path(os.environ.get('LIMINAL_DATA',str(Path.home()/'Library/Application Support/Liminal Factory')))
@@ -21,8 +23,9 @@ store=Store(HOME/'factory.sqlite3')
 def get_settings():
     row=store.rows('SELECT data FROM settings WHERE id=1')
     s=Settings.model_validate_json(row[0]['data']) if row else Settings(working_directory=str(HOME/'episodes'))
+    if s.agent_kind=='gemini': s.agent_kind='antigravity'
     if not s.working_directory: s.working_directory=str(HOME/'episodes')
-    defaults={'ffmpeg':'/opt/homebrew/bin/ffmpeg','ffprobe':'/opt/homebrew/bin/ffprobe','yt-dlp':'/opt/homebrew/bin/yt-dlp','codex':'/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex'}
+    defaults={'hc':str(Path.home()/'.local/bin/hc'),'agy':str(Path.home()/'.local/bin/agy'),'ffmpeg':'/opt/homebrew/bin/ffmpeg','ffprobe':'/opt/homebrew/bin/ffprobe','yt-dlp':'/opt/homebrew/bin/yt-dlp','codex':'/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex'}
     for name,path in defaults.items():
         if name not in s.tools and Path(path).is_file(): s.tools[name]=path
     unity=discover()
@@ -72,6 +75,10 @@ async def save_settings(s:Settings):
     if old.working_directory!=str(root) and store.rows('SELECT id FROM episodes LIMIT 1'): raise ValueError('Working directory cannot change while episodes exist. Move the complete data folder with the app closed.')
     root.mkdir(parents=True,exist_ok=True); s.working_directory=str(root)
     store.execute('INSERT OR REPLACE INTO settings VALUES(1,?)',(s.model_dump_json(),))
+    client_changed=(s.agent_kind,s.antigravity_port,s.antigravity_wait_seconds,s.tools.get('hc'),s.tools.get('agy'))!=(old.agent_kind,old.antigravity_port,old.antigravity_wait_seconds,old.tools.get('hc'),old.tools.get('agy'))
+    if client_changed:
+        if engine._client_session: engine._client_session.unbind()
+        engine._client_session=None
     engine.settings=s; engine.root=root; engine.semaphore=asyncio.Semaphore(s.max_concurrent_agents)
     return s.model_dump()
 
@@ -81,16 +88,45 @@ async def set_secret(name:str,request:Request):
 
 @app.post('/diagnostics/{name}')
 async def diagnostic(name:str):
-    if name not in {'herdr','codex','gemini','ffmpeg','ffprobe','yt-dlp','unity'}: raise ValueError('Unknown executable')
+    if name not in {'herdr','codex','gemini','ffmpeg','ffprobe','yt-dlp','unity','hc','agy'}: raise ValueError('Unknown executable')
     try:
+        if name in {'gemini','agy'}:
+            status=await engine.client_session().status()
+            return {'ok':status['state']=='Ready','message':status['state']+'. Connect an idle Client-launched Herdr pane in Settings. Direct Gemini/agy execution is disabled.'}
         path=engine.tool(name)
-        if name=='herdr': info=await engine.herdr().check(); return {'ok':True,'message':info['version']}
+        if name=='hc': return {'ok':True,'message':(await engine.client_session().check())['version']}
+        if name=='herdr': info=await HerdrAdapter(path,'codex').check(); return {'ok':True,'message':info['version']}
         if name=='unity':
             if not Path(path).is_file(): raise ValueError('Unity executable not found')
             return {'ok':True,'message':path+' — installed; graphics/license are verified at render time'}
         output=await run([path,'-version' if name in ('ffmpeg','ffprobe') else '--version'],timeout=20)
         return {'ok':True,'message':output[:500]}
     except Exception as exc: return {'ok':False,'message':str(exc)+'\nConfigure the executable path. Herdr: https://herdr.dev/tui/docs/install/'}
+
+@app.exception_handler(ClientSessionError)
+async def client_error(request:Request,exc:ClientSessionError):
+    from fastapi.responses import JSONResponse
+    return JSONResponse({'detail':str(exc)},409)
+
+@app.get('/antigravity/status')
+async def client_status():
+    try: return await engine.client_session().status()
+    except (RuntimeError,OSError,ValueError) as exc:
+        return {'state':'Waiting for Client','proxy_ready':False,'bound_target':None,'candidates':[],'message':str(exc)}
+
+@app.post('/antigravity/prepare')
+async def client_prepare(): return await engine.client_session().prepare()
+
+@app.post('/antigravity/bind')
+async def client_bind(request:Request):
+    data=await request.json()
+    return await engine.client_session().bind(data.get('target',''),data.get('launched_via_client'))
+
+@app.post('/antigravity/unbind')
+async def client_unbind():
+    session=engine.client_session()
+    if session.in_flight: raise ClientSessionError('Cancel or finish the active Client task before disconnecting')
+    session.unbind(); return {'ok':True}
 
 @app.get('/episodes')
 async def episodes():
@@ -99,7 +135,7 @@ async def episodes():
         config=json.loads(row['config']); tasks=store.rows('SELECT * FROM tasks WHERE episode=?',(row['id'],))
         for task in tasks: task['data']=json.loads(task['data'])
         statuses=[t['status'] for t in tasks]
-        status='Completed' if all(s in ('Completed','Approved') for s in statuses) else next((s for s in ('Failed','Running','Waiting for Approval','Cancelled') if s in statuses),'Pending')
+        status='Completed' if all(s in ('Completed','Approved') for s in statuses) else next((s for s in ('Failed','Waiting for Client','Running','Waiting for Approval','Cancelled') if s in statuses),'Pending')
         output.append({'id':row['id'],'config':config,'created':row['created'],'status':status,'progress':sum(s in ('Completed','Approved') for s in statuses)/len(tasks),'tasks':tasks})
     return output
 

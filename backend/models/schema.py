@@ -5,7 +5,7 @@ import re
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 class Status(StrEnum):
-    pending='Pending'; running='Running'; waiting='Waiting for Approval'; approved='Approved'; failed='Failed'; completed='Completed'; cancelled='Cancelled'
+    pending='Pending'; running='Running'; waiting_client='Waiting for Client'; waiting='Waiting for Approval'; approved='Approved'; failed='Failed'; completed='Completed'; cancelled='Cancelled'
 
 def youtube_url(value: str, channel=False):
     p=urlparse(value)
@@ -50,6 +50,8 @@ class Settings(BaseModel):
     working_directory: str=''
     max_concurrent_agents: int=Field(default=3,ge=1,le=8)
     agent_kind: str='codex'
+    antigravity_port: int=Field(default=8047,ge=1024,le=65535)
+    antigravity_wait_seconds: int=Field(default=300,ge=10,le=1800)
     model: str=''
     vision_enabled: bool=False
     appearance: str='dark'
@@ -59,7 +61,7 @@ class Settings(BaseModel):
     @field_validator('agent_kind')
     @classmethod
     def kind(cls,v):
-        if v not in {'codex','gemini'}: raise ValueError('Use codex or gemini')
+        if v not in {'codex','gemini','antigravity'}: raise ValueError('Use codex or antigravity')
         return v
 
 class MusicBrief(BaseModel):

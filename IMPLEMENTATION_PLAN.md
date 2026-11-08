@@ -41,3 +41,14 @@
 
 ## Deliberate MVP limits
 Appearance is dark; per-episode output defaults are exposed in New Episode rather than a global defaults editor. Recovery is explicit retry for interrupted work, not partial render continuation. Unity generation uses agent-authored bounded scene parameters and reviewed C# rather than arbitrary AI-generated executable C#. No unauthorized Suno automation or YouTube publishing.
+
+## Antigravity Client-only follow-up
+- [x] Read-only Client/CLI and actual Herdr Core API discovery
+- [x] Automatic Client opening and manual CLI/pane confirmation gate
+- [x] Existing-session adapter with no direct Gemini/agy launch or fallback
+- [x] Proxy/process identity checks, serialization, safe cancellation and restart
+- [x] Settings UI, Waiting for Client state, docs and 13 session-gate tests
+- [x] External Client launcher, stdin JSON-RPC, environment filtering and 11 launcher tests
+- [x] Real Client button → Herdr t2 launch and visible Ready connection in packaged UI
+- [x] Only the user-approved Custom Executable Path preference changed; bundle unchanged
+- [ ] Real model prompt via the connected session (not submitted during setup)

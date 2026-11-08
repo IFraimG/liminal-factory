@@ -14,7 +14,7 @@
 | Экспорт | WAV заданной длительности; H.264/AAC MP4 с проверками FFprobe и контрольным декодированием |
 | Упаковка | Tauri `.app` со встроенным Python sidecar; конфигурация `.dmg` |
 
-Проверены запуск `.app` на Apple Silicon, создание эпизода через GUI, восстановление после перезапуска, 24 автоматизированных теста и WAV ровно на 3600 секунд. Полный цикл с реальными Herdr/AI/YouTube/Unity пока не проверен. Результаты и ограничения перечислены в [VERIFICATION.md](VERIFICATION.md), план — в [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
+Проверены запуск `.app` на Apple Silicon, создание эпизода через GUI, восстановление после перезапуска, 48 автоматизированных тестов и WAV ровно на 3600 секунд. Полный цикл с реальными Herdr/AI/YouTube/Unity пока не проверен. Результаты и ограничения перечислены в [VERIFICATION.md](VERIFICATION.md), план — в [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
 
 ## Требования
 
@@ -28,7 +28,7 @@
 | FFmpeg / FFprobe | Подготовка аудио, кодирование и проверка видео | Нет |
 | yt-dlp | Получение разрешённого аудиофрагмента | Нет |
 | Совместимый Herdr TUI CLI | Workspace/pane/agent orchestration | Нет |
-| Codex CLI или Gemini CLI | Исполнение AI-задач; требуется авторизация | Нет |
+| Codex CLI или Antigravity Client + запущенный через него agy | Исполнение AI-задач; требуется авторизация | Нет |
 | Unity Editor | Создание сцен и batch render; требуется активная лицензия | Нет |
 | YouTube Data API v3 key | Загрузка заголовков канала | Настраивается в Keychain |
 | Suno и музыкальный WAV/MP3 | Ручная генерация и импорт музыки | Нет |
@@ -108,7 +108,7 @@ src-tauri/target/release/bundle/dmg/Liminal Factory_0.1.0_aarch64.dmg
 
 Имя/архитектура DMG зависит от машины сборки. Для запуска откройте `Liminal Factory.app` через Finder. При распространении передавайте весь `.app`, сохраняя его внутренние папки и symlink; нельзя переносить один исполняемый файл из `Contents/MacOS`.
 
-Сборки находятся в `src-tauri/target/release/bundle/`. Python включён в приложение через PyInstaller **onedir**, включая numpy, soundfile и нативные библиотеки. Он находится в `Contents/Resources/backend/`; отдельный Python конечному пользователю не нужен. One-file намеренно не используется: его semaphore/extraction механизм запрещён в среде разработки. FFmpeg, FFprobe, yt-dlp, Herdr, Codex/Gemini и Unity являются проверяемыми внешними prerequisite и в приложение не включены.
+Сборки находятся в `src-tauri/target/release/bundle/`. Python включён в приложение через PyInstaller **onedir**, включая numpy, soundfile и нативные библиотеки. Он находится в `Contents/Resources/backend/`; отдельный Python конечному пользователю не нужен. One-file намеренно не используется: его semaphore/extraction механизм запрещён в среде разработки. FFmpeg, FFprobe, yt-dlp, Herdr, Codex/Antigravity Client и Unity являются проверяемыми внешними prerequisite и в приложение не включены.
 
 ## Настройка внешних компонентов
 
@@ -151,7 +151,65 @@ herdr agent list
 
 ### AI-провайдер
 
-Установите и авторизуйте выбранный Codex либо Gemini CLI по документации его поставщика. Проверьте `codex --version` или `gemini --version`, затем вручную убедитесь в доступности нужной модели. В приложении задайте agent kind, default model и при необходимости model mapping для отдельных задач. Флажок vision включайте только после проверки, что агент действительно умеет открывать изображения с диска.
+Установите и авторизуйте Codex CLI по документации его поставщика либо подготовьте Client-сеанс по инструкции ниже. Для Codex проверьте `codex --version` и доступность модели. Gemini/agy напрямую приложение не запускает. В приложении задайте agent kind, default model и при необходимости model mapping для отдельных задач. Флажок vision включайте только после проверки, что агент действительно умеет открывать изображения с диска.
+
+### Antigravity Client: только предварительно запущенный CLI
+
+Для вашего сценария добавлен отдельный режим **Antigravity Client · existing Herdr CLI**. Он работает с установленным Herdr Core CLI `hc` (проверен API/schema версии 0.1.18), а не пытается выдать его за Herdr TUI CLI. Для режима Codex по-прежнему нужен документированный TUI adapter.
+
+1. В Settings → AI provider выберите **Antigravity Client · existing Herdr CLI**.
+2. Проверьте `hc` и `agy` executable paths. Автопоиск учитывает `~/.local/bin/hc` и `~/.local/bin/agy`. Production orchestrator использует путь `agy` только для сверки процесса. Запуск CLI выполняет Client через описанный ниже внешний launcher.
+3. Укажите локальный proxy port Client (по умолчанию `8047`) и время ожидания вашего запуска CLI (по умолчанию 300 секунд). Нажмите **Save settings**.
+4. Нажмите **Open Client / wait for CLI**. Если при Start Production сеанс ещё не подключён, Liminal Factory также открывает `/Applications/Antigravity Client.app` и переводит AI-задачу в **Waiting for Client**.
+5. Настройте внешний launcher, если Client по умолчанию открывает отдельный Terminal (инструкция ниже), затем самостоятельно нажмите штатную кнопку **CLI** в Antigravity Client. Выберите нужную модель, например доступный вам вариант Gemini 4 Argon, внутри этого CLI. Поля per-task model mapping в Liminal Factory в этом режиме отключены: уже работающий сеанс сохраняет вашу модель.
+6. В секции **Antigravity Client session** нажмите Refresh panes, выберите соответствующую idle-панель (`t7` и т.п.), подтвердите **I launched this dedicated CLI pane using the Antigravity Client button** и нажмите **Connect existing CLI**.
+7. Оставьте эту панель выделенной для задач Liminal Factory. При необходимости подтвердите доступ агента к рабочей папке эпизода в самом CLI; приложение не принимает permission/auth dialogs за вас.
+
+При подключении проверяются foreground executable `agy`, PID, момент создания терминала и idle-состояние; перед отправкой промпта `hc send --if idle` повторно проверяет состояние на стороне Herdr. Важно: способ первоначального запуска подтверждаете вы — приложение не заявляет, что может самостоятельно доказать происхождение произвольного уже запущенного процесса. Проверки процесса защищают от незаметной замены панели после вашего подтверждения.
+
+Production orchestrator в этом режиме **не запускает `gemini`/`agy`, не выполняет `hc run`/`agent start` и не создаёт pane**. Его adapter использует только get/list/send/read/interrupt существующего терминала. Запуск Client — штатный `open -a` macOS. Bundle Client и файлы его credentials не редактируются. Единственное согласованное изменение пользовательских настроек Client — путь CLI на внешний launcher. `/health` на `127.0.0.1` проверяет готовность локального proxy.
+
+Один подключённый CLI обрабатывает AI-задачи последовательно, чтобы параллельные промпты не перемешивались. Независимые задачи анализа/медиа продолжают использовать DAG concurrency. Успех требует нового валидного JSON-артефакта и завершённого turn; один `idle` не подтверждает результат.
+
+Если proxy пропал, pane завершился или PID/terminal identity изменились, новые промпты блокируются. Прямого fallback нет. Cancel может прервать только текущий промпт, переданный этим adapter в тот же подтверждённый процесс; пользовательская панель не закрывается и CLI не перезапускается. После перезапуска Liminal Factory или замены CLI требуется повторное подключение. Старое значение provider `gemini` также направляется в этот защищённый режим.
+
+При истечении ожидания AI-задача получает Failed с инструкцией: запустите CLI через Client, подключите панель, затем Retry Task. Без подтверждения панели никакие задания в неё не отправляются.
+
+#### Если Client открывает CLI в обычном Terminal
+
+Обычный Terminal-сеанс нельзя подключить к Herdr Core задним числом. Для этого случая предусмотрен отдельный **Client → Herdr launcher** вне bundle Client. Он вызывается штатной кнопкой CLI самого Client и создаёт агентский терминал через документированный в установленном `hc schema` JSON-RPC метод `terminal.run`.
+
+Сначала соберите актуальную `.app`, затем создайте файл launcher:
+
+```bash
+npm run tauri build -- --bundles app
+.venv/bin/python scripts/create_client_launcher.py \
+  --output "$HOME/Library/Application Support/Liminal Factory/launchers/antigravity-client-herdr" \
+  --backend "$PWD/src-tauri/target/release/bundle/macos/Liminal Factory.app/Contents/Resources/backend/liminal-backend" \
+  --cwd "$HOME/Library/Application Support/Liminal Factory/episodes"
+```
+
+Файл launcher содержит только пути и параметры запуска, имеет права `0700`, использует упакованный Python sidecar и не требует системного Python при обычном запуске. `scripts/create_client_launcher.py` нужен только для первоначальной генерации/перенастройки файла из исходников. Укажите свою рабочую папку в `--cwd`, если она отличается от значения по умолчанию. Не выбирайте сам launcher в качестве оригинального `agy`.
+
+В **Antigravity Client → Settings → Antigravity CLI (agy) → Custom Executable Path** укажите созданный файл и нажмите **Done**. Другие поля Client менять не требуется. После этого кнопка **CLI** запускает следующую цепочку:
+
+```text
+Antigravity Client → внешний launcher → Herdr Core → оригинальный agy
+                                              ↓
+                                Liminal Factory подключается к готовому сеансу
+```
+
+Launcher проверяет локальный proxy, пересылает необходимые унаследованные переменные провайдера в локальный Herdr через **stdin JSON-RPC** и не записывает их на диск, в CLI-аргументы или логи. Несвязанные переменные вроде `SSH_AUTH_SOCK` и `LIMINAL_TOKEN` не пересылаются. Поддерживаются только интерактивные startup-опции `--model`/`--effort`; secret-bearing settings, `--print` и permission-bypass flags отклоняются. Сам orchestrator этот launcher не вызывает: он только открывает Client и ждёт вашего запуска CLI.
+
+Launcher напечатает адрес созданного терминала, например `t2`. Если Herdr GUI ещё не показывает его, в существующей панели можно открыть его командой:
+
+```bash
+~/.local/bin/hc attach t2
+```
+
+Рассмотрите стартовый trust/permission-запрос CLI самостоятельно. После его завершения панель должна сообщать `idle`; тогда подключите её в Liminal Factory Settings. Модель выбирается внутри CLI. Проверка настройки не отправляет модельных заданий и не генерирует контент.
+
+Для возврата к прежнему поведению очистите только поле **Custom Executable Path** в Client. При переносе `.app`, рабочей папки или launcher пересоздайте launcher с актуальными путями и обновите это поле. В локально настроенной среде launcher находится в папке `outputs/` проекта и ссылается на собранную здесь `.app`; не перемещайте эти файлы без перенастройки.
 
 ### YouTube API
 
@@ -180,8 +238,8 @@ Test Connection подтверждает наличие executable. Работо
 
 1. Откройте Settings, выберите отдельную директорию проектов и сохраните настройки.
 2. Настройте пути внешних инструментов и нажмите Test Connection для каждого. Unity автоматически ищется в `/Applications/Unity/Hub/Editor/*/Unity.app/Contents/MacOS/Unity`.
-3. Установите **Herdr TUI CLI** из официальной документации. Наличие приложения `Herdr.app` либо другого исполняемого файла `hc` не подтверждает совместимость. Требуются команды `workspace create`, `agent start --kind … --pane …`, `agent prompt/get/read/send-keys` и `pane close`. Запустите Herdr server самостоятельно согласно его документации. Приложение не перезапускает чужие сессии.
-4. Авторизуйте Codex либо Gemini в их терминальном CLI. Выберите kind и идентификатор модели; для отдельных задач можно переопределить модель. Herdr использует каноническое имя executable. Директория настроенного CLI передаётся в PATH новой workspace; имя файла должно быть `codex`/`gemini`.
+3. Для режима Codex установите **Herdr TUI CLI** из официальной документации. Наличие приложения `Herdr.app` либо другого исполняемого файла `hc` не подтверждает совместимость. Требуются команды `workspace create`, `agent start --kind … --pane …`, `agent prompt/get/read/send-keys` и `pane close`. Запустите Herdr server самостоятельно согласно его документации. Приложение не перезапускает чужие сессии.
+4. Для режима Codex авторизуйте CLI и задайте модель; при необходимости переопределите модель для отдельных задач. Для Antigravity следуйте инструкции подключения существующей панели выше; приложение не запускает Gemini напрямую.
 5. Убедитесь, что выбранный agent/model действительно умеет просматривать локальные изображения, и включите соответствующий флажок. Без этого visual analysis недоступен и production не начнётся.
 6. В Google Cloud включите YouTube Data API v3, создайте и ограничьте ключ этим API. Сохраните его в Settings → YouTube. Он хранится только в нативном macOS Keychain (Security framework через keyring macOS backend).
 7. Активируйте Unity Personal/Pro в Unity Hub. Нужен работающий графический рендеринг. `-nographics` не используется и не подходит для захвата кадров.
@@ -242,7 +300,7 @@ Failed-задача блокирует зависимых потребителе
 - Строгий HTTPS/YouTube whitelist, защита от path traversal и symlink escape, проверка содержимого изображений/аудио, ограничения импорта 70 MB и 40 MP.
 - Reference data не считаются инструкциями. Модели получают явную политику; код сцены фиксирован, их JSON проходит Pydantic validation. Автоматической публикации нет.
 - SQL WAL хранит состояния, identity pane/agent, артефакты и structured logs. Backend lock исключает два orchestrator для одной data folder.
-- После перезапуска прерванные локальные операции переходят в Failed с требованием Retry. Сохранённые Herdr identity сверяются с CLI; проверяемый агент останавливается перед повтором. Произвольный сохранённый PID не используется для kill. Если Herdr недоступен, интерфейс требует ручной проверки. Это безопасное восстановление к явному повтору, а не продолжение прерванного FFmpeg с середины.
+- После перезапуска прерванные локальные операции переходят в Failed с требованием Retry. Сохранённые identity принадлежащих приложению Herdr-агентов сверяются с CLI перед повтором. Пользовательский Client-сеанс после перезапуска не прерывается; требуется повторное подключение. Произвольный сохранённый PID не используется для kill. Если Herdr недоступен, интерфейс требует ручной проверки. Это безопасное восстановление к явному повтору, а не продолжение прерванного FFmpeg с середины.
 - Каждая попытка агента имеет уникальный результат JSON. `idle`/`done` без валидного файла не считаются успехом. Approved-файлы повторно проверяются по SHA-256 перед обработкой/сборкой.
 - Мок Herdr существует только как test dependency; production UI не может выбрать его.
 
@@ -286,6 +344,7 @@ npm run build
 | Backend did not initialize in 30 seconds | Убедитесь, что sidecar полностью упакован и доступна data folder; проверьте запуск из Terminal |
 | Workspace already open | Закройте другой экземпляр, использующий ту же data folder; не удаляйте lock у работающего процесса |
 | Herdr missing/incompatible | Проверьте TUI CLI, `herdr agent start --help`, server и абсолютный executable path |
+| Waiting for Client | Нажмите CLI в Antigravity Client; выберите его idle-панель в Settings и подтвердите подключение. Client-файлы изменять не нужно |
 | Agent blocked | Откройте его pane в Herdr, разберите запрос авторизации/доверия и повторите задачу; приложение не подтверждает диалоги за вас |
 | Нет `music_brief.json` / structured result | Agent idle не означает успех: требуется валидный результат; проверьте agent log, модель и доступ к workspace |
 | YouTube API key missing / HTTP 403 | Ключ в Keychain, API включён, ограничения ключа и quota корректны |

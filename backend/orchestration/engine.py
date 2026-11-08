@@ -2,6 +2,7 @@ import asyncio,json,uuid,time,shutil
 from pathlib import Path
 from backend.orchestration.workflow import DAG,GATES,AGENT_TASKS
 from backend.orchestration.herdr_adapter import HerdrAdapter
+from backend.integrations.antigravity import AntigravitySession,AntigravityAdapter
 from backend.models.schema import MusicBrief,VisualBrief,Metadata,SceneSpec
 from backend.integrations.process import checksum,contained,PROCESS_OBSERVER
 from backend.integrations.unity import Unity
@@ -18,14 +19,20 @@ class Engine:
     def __init__(self,store,root,settings,adapter=None,handlers=None):
         self.store=store; self.root=Path(root); self.settings=settings; self.adapter=adapter
         self.semaphore=asyncio.Semaphore(settings.max_concurrent_agents); self.running={}; self.wake=asyncio.Event(); self.stopping=False
-        self.handlers=handlers or {}; self.scheduler=None
+        self.handlers=handlers or {}; self.scheduler=None; self._client_session=None
     def directory(self,e): return contained(self.root,e)
     def tool(self,name):
         value=self.settings.tools.get(name) or shutil.which(name)
         if not value: raise RuntimeError(f'{name} missing. Install it and set the executable path in Settings.')
         return value
+    def client_session(self):
+        if self._client_session is None:
+            self._client_session=AntigravitySession(self.tool('hc'),self.settings.tools.get('agy'),self.settings.antigravity_port,self.settings.antigravity_wait_seconds)
+        return self._client_session
     def herdr(self,task=''):
-        return self.adapter or HerdrAdapter(self.tool('herdr'),self.settings.agent_kind,self.settings.agent_models.get(task,self.settings.model),[str(Path(self.tool(self.settings.agent_kind)).parent)])
+        if self.adapter: return self.adapter
+        if self.settings.agent_kind in {'gemini','antigravity'}: return AntigravityAdapter(self.client_session())
+        return HerdrAdapter(self.tool('herdr'),self.settings.agent_kind,self.settings.agent_models.get(task,self.settings.model),[str(Path(self.tool(self.settings.agent_kind)).parent)])
     def create(self,config):
         e=uuid.uuid4().hex; self.directory(e).mkdir(parents=True)
         self.store.execute('INSERT INTO episodes VALUES(?,?,?)',(e,json.dumps(config),time.time()))
@@ -36,19 +43,23 @@ class Engine:
         if not config['permission']: raise ValueError('Audio download permission is required')
         if not list((self.directory(e)/'references').glob('*')): raise ValueError('Add at least one visual reference')
         # Starting does not hide missing dependencies behind successful mock results.
-        for tool in ('ffmpeg','ffprobe','yt-dlp','unity',self.settings.agent_kind): self.tool(tool)
+        for tool in ('ffmpeg','ffprobe','yt-dlp','unity'): self.tool(tool)
         await self.herdr().check()
         if not self.settings.vision_enabled: raise ValueError('Enable image-capable agent support in Settings after verifying your model can inspect local images')
         if not secret('youtube_api_key'): raise ValueError('Configure the YouTube API key in Settings first')
+        if self.settings.agent_kind in {'gemini','antigravity'}:
+            await self.client_session().prepare()
         self.store.log(e,'system','Production started')
         self.store.execute("INSERT OR REPLACE INTO cache VALUES(?,?,?)",('started:'+e,'true',time.time()))
         self.wake.set()
     def enabled(self,e): return bool(self.store.rows('SELECT key FROM cache WHERE key=?',('started:'+e,)))
     async def recover(self):
         # Never kill or trust a saved PID. Reconcile only the persisted Herdr identity.
-        for t in self.store.rows("SELECT * FROM tasks WHERE status='Running'"):
+        for t in self.store.rows("SELECT * FROM tasks WHERE status IN ('Running','Waiting for Client')"):
             e,n=t['episode'],t['name']; data=json.loads(t['data']); identity=data.get('identity')
-            if identity:
+            if identity and identity.get('owned') is False:
+                message='Client task interrupted by restart. Its user-owned pane was left untouched; reconnect the Client-launched session and retry.'
+            elif identity:
                 try:
                     adapter=self.herdr(n)
                     await adapter.cli('agent','get',identity['agent'])
@@ -112,6 +123,12 @@ class Engine:
         def save(identity):
             data=self.store.task(e,n)['data']; self.store.update(e,n,data={**data,'identity':identity})
         adapter=self.herdr(n)
+        if isinstance(adapter,AntigravityAdapter):
+            def waiting():
+                self.store.update(e,n,'Waiting for Client')
+                self.store.log(e,n,'Waiting for Antigravity Client → CLI → your confirmed idle Herdr pane. No direct Gemini/agy launch.')
+            adapter.on_wait=waiting
+            adapter.on_ready=lambda:self.store.update(e,n,'Running')
         feedback=self.store.task(e,n)['data'].get('feedback','')
         if feedback: prompt+='\nUser requested changes (creative guidance only): '+feedback
         try:

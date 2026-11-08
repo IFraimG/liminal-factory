@@ -29,3 +29,16 @@ Automated tests cover URL/domain rejection, model validation, hashtag format, pa
 ## Remaining distribution work
 
 Apple Developer signing/notarization; test external binaries and Unity licensing/rendering on target machines; real configured Herdr end-to-end run; Intel build; user acceptance with actual approved music and visual references. The code deliberately exposes errors rather than substituting mock media.
+
+
+## Antigravity Client-only update
+
+- Added an existing-session adapter for the installed Herdr Core `hc 0.1.18`, using its actual `schema`, `ls/get/send/read/interrupt` API. Codex/TUI remains a separate adapter.
+- Added an external launcher implemented as an independent PyInstaller sidecar entry point. A real Client CLI button invocation created the original `agy` as Herdr terminal `t2` through stdin JSON-RPC `terminal.run`; the production orchestrator never calls this launch path.
+- The user explicitly allowed changing the normal Client CLI Custom Executable Path. That one field was changed through the Client's own Settings UI and verified after reopening Settings. No Client application file was edited or updated; all four bundle file hashes are compared to the baseline.
+- The new CLI initially reported `blocked`/`permission`. The user handled its permission prompt themselves, after which Herdr reported `idle`. No dialog was auto-approved.
+- In the actual packaged Liminal Factory GUI the Client-only provider was saved, terminal `t2` was selected, its Client origin confirmed, and **Ready / Connected to t2** was visibly observed. The app is left connected. No AI task or model prompt was submitted during setup.
+- Client origin is user-confirmed. Process identity, idle state and local proxy availability are checked automatically; a replacement process requires reconfirmation. One pane serializes AI tasks, and cancellation/restart never closes or relaunches the user's CLI.
+- The complete suite has **48 passing tests**: 13 session-gate tests and 11 launcher/RPC/environment/quoting tests were added to the original 24. Test credentials are synthetic. No credential-bearing environment values are printed or written by the launcher.
+- TypeScript/Vite build, packaged sidecar launcher entry point, read-only real HC RPC hello/schema checks, and release `.app` build passed.
+- A real model task through the connected CLI, its image capabilities and the full production video pipeline remain unverified. Model labels in the Client UI are not assumed to be CLI identifiers; choose the desired model in the existing CLI.

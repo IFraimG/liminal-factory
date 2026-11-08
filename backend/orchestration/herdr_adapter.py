@@ -21,6 +21,8 @@ class HerdrAdapter:
         agents=await self.cli('agent','list')
         return {'version':version.strip(),'agents':agents,'kind':self.kind,'help':help_text}
     async def launch(self,root:Path,prompt:str,result_file:str,save_identity,timeout=1800):
+        if self.kind in {'gemini','agy','antigravity'}:
+            raise RuntimeError('Direct Gemini/agy launch is disabled. Connect a Client-launched existing Herdr session.')
         await self.check()
         result=contained(root,result_file)
         # A unique result name prevents a stale JSON from satisfying a new attempt.
