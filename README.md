@@ -14,7 +14,7 @@
 | Экспорт | WAV заданной длительности; H.264/AAC MP4 с проверками FFprobe и контрольным декодированием |
 | Упаковка | Tauri `.app` со встроенным Python sidecar; конфигурация `.dmg` |
 
-Проверены запуск `.app` на Apple Silicon, создание эпизода через GUI, восстановление после перезапуска, 48 автоматизированных тестов и WAV ровно на 3600 секунд. Полный цикл с реальными Herdr/AI/YouTube/Unity пока не проверен. Результаты и ограничения перечислены в [VERIFICATION.md](VERIFICATION.md), план — в [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
+Проверены запуск `.app` на Apple Silicon, создание эпизода через GUI, восстановление после перезапуска, 60 автоматизированных тестов и WAV ровно на 3600 секунд. Полный цикл с реальными Herdr/AI/YouTube/Unity пока не проверен. Результаты и ограничения перечислены в [VERIFICATION.md](VERIFICATION.md), план — в [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
 
 ## Требования
 
@@ -123,6 +123,16 @@ yt-dlp --version
 ```
 
 В Settings → External Tools задаются пути именно к executable, а не к папке. Если программа работает в Terminal, но не обнаруживается в `.app`, укажите абсолютный путь из `command -v ffmpeg`, `command -v ffprobe` и `command -v yt-dlp`.
+
+#### Cookies из Google Chrome
+
+Если вы разрешаете использовать свой браузерный сеанс, в **Settings → YouTube download session** включите **Use cookies from Google Chrome for permitted YouTube downloads**, затем сохраните настройки. Это не снимает требование согласия на получение самого аудиофрагмента в New Episode.
+
+Пустое поле Chrome profile folder соответствует `--cookies-from-browser chrome`: yt-dlp выбирает наиболее недавно использованный профиль. Для явного выбора можно указать имя каталога `Default` или `Profile 1`. Пути и дополнительные browser/keyring options в этом поле не принимаются.
+
+Приложение передаёт yt-dlp только имя браузера/профиля. Cookies читаются самим yt-dlp; `--cookies FILE` не используется, cookie jar не экспортируется. `--ignore-config` исключает неожиданные параметры из внешних конфигов yt-dlp, а чувствительные HTTP-заголовки и query-параметры URL удаляются из download.log и сообщений об ошибках. Chrome и его профиль приложение не изменяет. На текущей машине команда с cookies Chrome успешно получила метаданные выбранного видео; загрузка полного файла этим тестом не выполнялась.
+
+См. [официальную FAQ yt-dlp](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp).
 
 ### Herdr TUI
 
@@ -290,6 +300,8 @@ flowchart LR
     L --> M[output/final.mp4]
 ```
 
+Причина отклонения Start Production отображается в интерфейсе и сохраняется в Execution log как `Start blocked`. Ошибки API, включая 400/401/500, получают CORS-заголовки внешней ASGI-обёрткой, чтобы WebKit мог прочитать текст. При настоящем сетевом сбое frontend сообщает о недоступности локального backend и не повторяет запрос автоматически.
+
 Failed-задача блокирует зависимых потребителей. Retry повторяет выбранную неуспешную/отменённую задачу после успешного завершения её dependencies. Cancel останавливает текущую process group либо созданный агентский pane. Approve доступен только в Waiting for Approval. Request Changes сбрасывает зависимые результаты и сохраняет текст правок для следующей попытки агента.
 
 ## Надёжность и безопасность
@@ -340,6 +352,7 @@ npm run build
 | `cargo` / `rustc` not found | Rust установлен; новый Terminal загружает PATH; `cargo --version` работает |
 | Python ниже 3.11 | Путь `command -v python3` и `python3 --version`; окружение создаётся этим интерпретатором |
 | `.venv/bin/python` not found | Выполните `python3 scripts/bootstrap.py` из корня проекта |
+| Start сообщает о поддержке изображений | Подтвердите image capability выбранного CLI/model в Settings только после проверки, что он действительно умеет открывать изображения с диска. До этого workflow не запускается |
 | Backend is not connected | Открывайте приложение через Tauri, а не отдельную страницу Vite; изучите stderr Terminal |
 | Backend did not initialize in 30 seconds | Убедитесь, что sidecar полностью упакован и доступна data folder; проверьте запуск из Terminal |
 | Workspace already open | Закройте другой экземпляр, использующий ту же data folder; не удаляйте lock у работающего процесса |
@@ -348,7 +361,7 @@ npm run build
 | Agent blocked | Откройте его pane в Herdr, разберите запрос авторизации/доверия и повторите задачу; приложение не подтверждает диалоги за вас |
 | Нет `music_brief.json` / structured result | Agent idle не означает успех: требуется валидный результат; проверьте agent log, модель и доступ к workspace |
 | YouTube API key missing / HTTP 403 | Ключ в Keychain, API включён, ограничения ключа и quota корректны |
-| yt-dlp download error | URL, доступность материала и разрешение; защищённый/недоступный материал не обходится |
+| yt-dlp download error | URL, разрешение и доступность материала; при необходимости включите Chrome cookies и выберите профиль с доступом. Ошибки входа/ограничений не считаются успешной загрузкой |
 | Visual analysis unavailable | Image-capable model/CLI, локальный просмотр файлов и флажок vision |
 | Unity license/graphics error | Unity Hub license, первый ручной запуск Editor, работающая графическая среда; не добавляйте `-nographics` |
 | Approved artifact changed | Файл изменён после approval; верните исходный результат или запросите изменения и утвердите повторно |

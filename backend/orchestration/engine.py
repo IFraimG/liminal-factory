@@ -146,7 +146,7 @@ class Engine:
     async def dispatch(self,e,n):
         if n in self.handlers: return await self.handlers[n](e,n)
         c=self.store.config(e); root=self.directory(e)
-        if n=='audio_reference': return await analyze(root,c,self.tool)
+        if n=='audio_reference': return await analyze(root,c,self.tool,self.settings.yt_dlp_use_chrome_cookies,self.settings.yt_dlp_chrome_profile)
         if n=='music_brief':
             return await self.ask(e,n,'Read audio_analysis.json (technical analysis only). Create an original ambient music brief and at least 2 Suno prompts for '+c['style']+'. Do not claim you listened to audio.',MusicBrief)
         if n=='visual_reference':

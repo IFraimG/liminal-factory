@@ -4,7 +4,7 @@ from pathlib import Path
 
 PROCESS_OBSERVER=ContextVar('process_observer',default=None)
 
-async def run(args:list[str],cwd=None,timeout=120,log:Path|None=None):
+async def run(args:list[str],cwd=None,timeout=120,log:Path|None=None,sanitize=None):
     # Shell interpolation is unavailable. Process handles, never persisted PIDs, authorize cancellation.
     process=await asyncio.create_subprocess_exec(*map(str,args),cwd=cwd,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.STDOUT,start_new_session=True)
     observer=PROCESS_OBSERVER.get()
@@ -22,6 +22,7 @@ async def run(args:list[str],cwd=None,timeout=120,log:Path|None=None):
                 await process.wait()
             raise
         text=output[0].decode(errors='replace')
+        if sanitize: text=sanitize(text)
         if log: log.write_text(text)
         if process.returncode: raise RuntimeError(f'{Path(str(args[0])).name} exited {process.returncode}: {text[-2500:]}')
         return text

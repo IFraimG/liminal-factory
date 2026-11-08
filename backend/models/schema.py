@@ -55,9 +55,16 @@ class Settings(BaseModel):
     model: str=''
     vision_enabled: bool=False
     appearance: str='dark'
+    yt_dlp_use_chrome_cookies: bool=False
+    yt_dlp_chrome_profile: str=''
     cache_hours: int=Field(default=24,ge=0,le=720)
     tools: dict[str,str]=Field(default_factory=dict)
     agent_models: dict[str,str]=Field(default_factory=dict)
+    @field_validator('yt_dlp_chrome_profile')
+    @classmethod
+    def chrome_profile(cls,v):
+        if v and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}',v): raise ValueError('Use a Chrome profile folder name, not a path or browser options')
+        return v
     @field_validator('agent_kind')
     @classmethod
     def kind(cls,v):

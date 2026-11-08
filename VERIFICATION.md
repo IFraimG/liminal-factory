@@ -42,3 +42,13 @@ Apple Developer signing/notarization; test external binaries and Unity licensing
 - The complete suite has **48 passing tests**: 13 session-gate tests and 11 launcher/RPC/environment/quoting tests were added to the original 24. Test credentials are synthetic. No credential-bearing environment values are printed or written by the launcher.
 - TypeScript/Vite build, packaged sidecar launcher entry point, read-only real HC RPC hello/schema checks, and release `.app` build passed.
 - A real model task through the connected CLI, its image capabilities and the full production video pipeline remain unverified. Model labels in the Client UI are not assumed to be CLI identifiers; choose the desired model in the existing CLI.
+
+## Load failed diagnosis and Chrome cookies
+
+- Reproduced the user's rejected Start Production request: settings had `vision_enabled=false`, and all episode tasks were Pending with no started workflow/download.
+- Demonstrated the transport defect before the fix: a normal health response had `Access-Control-Allow-Origin: tauri://localhost`, but the ValueError rejection response had HTTP 400 with no CORS header. WebKit therefore hid its body as a fetch `Load failed` error.
+- Moved CORS around the complete ASGI app, including auth/validation and server-error responses; added readable JSON error handling, persistent `Start blocked` episode logs, and explicit frontend network errors without automatic POST retry. The image-capability requirement remains enforced.
+- Added explicit Chrome cookie/profile settings and `--cookies-from-browser chrome[:PROFILE]` with consent validation before browser/tool access. No cookie jar export or cookie values are added to arguments, logs or repository files. Cookie/header and signed-URL redaction is tested for downloader logs/errors.
+- Real yt-dlp metadata-only check of the user's consented video completed with exit code 0 using `--cookies-from-browser chrome`; its expected YouTube ID was returned, with no stderr error. Cookie values were not printed or exported. This did not download the full reference audio.
+- The full automated suite now has **60 passing tests**, including CORS for validation/auth/unhandled errors, persisted preflight errors, rejected cookie option/path injection, consent ordering, explicit yt-dlp flags, and output redaction. Frontend compilation passed.
+- In the rebuilt native app, Chrome cookies were enabled and saved through Settings. The existing Client pane was reconnected; repeating Start on the same episode visibly displayed the image-capability explanation instead of `Load failed`. The `Start blocked` log was confirmed in the real SQLite database. The vision assertion was deliberately left false, and production/model tasks were not started.

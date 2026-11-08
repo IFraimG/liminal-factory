@@ -52,3 +52,9 @@ Appearance is dark; per-episode output defaults are exposed in New Episode rathe
 - [x] Real Client button → Herdr t2 launch and visible Ready connection in packaged UI
 - [x] Only the user-approved Custom Executable Path preference changed; bundle unchanged
 - [ ] Real model prompt via the connected session (not submitted during setup)
+
+## Load failed / Chrome download-session follow-up
+- [x] Reproduce vision preflight rejection masked by missing CORS
+- [x] Outermost CORS, readable errors, persisted start rejection, no blind retry
+- [x] Consent-bound Chrome cookie/profile configuration with redacted downloader logs
+- [x] Real Chrome-cookie yt-dlp metadata check (exit 0), 60 tests and frontend build

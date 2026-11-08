@@ -5,12 +5,13 @@ import soundfile as sf
 from backend.models.schema import youtube_url
 from backend.integrations.process import run
 from backend.media.ffmpeg import probe
+from backend.integrations.download import chrome_cookie_args,redact_download_output
 
-async def analyze(root:Path,config,tools):
+async def analyze(root:Path,config,tools,chrome_cookies=False,chrome_profile=''):
     youtube_url(config['audio_url'])
     if not config['permission']: raise ValueError('Permission to obtain the audio excerpt is required')
     start=config['start_seconds']; end=start+config['analysis_minutes']*60
-    await run([tools('yt-dlp'),'--no-playlist','--no-overwrites','--download-sections',f'*{start}-{end}','--force-keyframes-at-cuts','--socket-timeout','30','--retries','2','--ffmpeg-location',str(Path(tools('ffmpeg')).parent),'-f','bestaudio','-x','--audio-format','mp3','-o',str(root/'reference.%(ext)s'),'--',config['audio_url']],timeout=900,log=root/'download.log')
+    await run([tools('yt-dlp'),'--ignore-config','--no-cache-dir',*chrome_cookie_args(chrome_cookies,chrome_profile),'--no-playlist','--no-overwrites','--download-sections',f'*{start}-{end}','--force-keyframes-at-cuts','--socket-timeout','30','--retries','2','--ffmpeg-location',str(Path(tools('ffmpeg')).parent),'-f','bestaudio','-x','--audio-format','mp3','-o',str(root/'reference.%(ext)s'),'--',config['audio_url']],timeout=900,log=root/'download.log',sanitize=redact_download_output)
     path=root/'reference.mp3'
     await run([tools('ffmpeg'),'-y','-v','error','-i',str(path),'-ar','22050','-ac','1',str(root/'analysis.wav')])
     energies=[]; centroids=[]; flux=[]; previous=None

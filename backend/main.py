@@ -40,7 +40,6 @@ async def lifespan(app):
     yield
     await engine.close()
 app=FastAPI(lifespan=lifespan,docs_url=None,redoc_url=None)
-app.add_middleware(CORSMiddleware,allow_origins=['http://localhost:1420','http://127.0.0.1:1420','tauri://localhost','http://tauri.localhost'],allow_methods=['GET','POST','PUT','DELETE'],allow_headers=['Authorization','Content-Type'])
 
 @app.middleware('http')
 async def auth(request:Request,call_next):
@@ -159,7 +158,15 @@ async def detail(e:str):
     return {'id':e,'config':config,'tasks':tasks,'logs':store.rows('SELECT * FROM logs WHERE episode=? ORDER BY id DESC LIMIT 300',(e,)),'artifacts':artifacts,'references':refs,'music':[str(p.relative_to(root)) for p in sorted((root/'music').glob('*'))]}
 
 @app.post('/episodes/{e}/start')
-async def start(e:str): await engine.start(e); return {'started':True}
+async def start(e:str):
+    try: await engine.start(e)
+    except (ValueError,RuntimeError,OSError) as exc:
+        from backend.integrations.download import redact_download_output
+        message=redact_download_output(str(exc) or type(exc).__name__)
+        if store.rows('SELECT id FROM episodes WHERE id=?',(e,)):
+            store.log(e,'system','Start blocked: '+message)
+        raise HTTPException(400 if isinstance(exc,ValueError) else 503,detail=message) from None
+    return {'started':True}
 
 @app.post('/episodes/{e}/tasks/{n}/{action}')
 async def task_action(e:str,n:str,action:str,request:Request):
@@ -255,6 +262,19 @@ async def events(request:Request,after:int=0):
             if not rows: yield ': heartbeat\n\n'
             await asyncio.sleep(1)
     return StreamingResponse(stream(),media_type='text/event-stream')
+
+@app.exception_handler(Exception)
+async def unexpected_error(request:Request,exc:Exception):
+    # Never return a traceback, credentials or arbitrary provider output to the webview.
+    from fastapi.responses import JSONResponse
+    import logging
+    logging.getLogger('liminal').error('Backend failure: %s at %s',type(exc).__name__,request.url.path)
+    return JSONResponse({'detail':'Local backend error ('+type(exc).__name__+'). Check the episode log and application stderr.'},500)
+
+# Wrap the complete ASGI app, including error responses produced by outer middleware.
+# Adding CORS inside auth hid rejected starts from WebKit as a generic "Load failed".
+api_app=app
+app=CORSMiddleware(api_app,allow_origins=['http://localhost:1420','http://127.0.0.1:1420','tauri://localhost','http://tauri.localhost'],allow_methods=['GET','POST','PUT','DELETE'],allow_headers=['Authorization','Content-Type'])
 
 def main():
     import uvicorn,fcntl
