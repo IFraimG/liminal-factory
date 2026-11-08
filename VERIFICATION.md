@@ -106,3 +106,15 @@ Apple Developer signing/notarization; test external binaries and Unity licensing
 - **96 Python tests and 13 browser DOM tests pass**. Tests cover missing/invalid mandatory options, retaining options during handoff, hidden duplicate controls, collapsed role-button panels, HXC selection states and independent read-back rejection after mutation. Frontend and release `.app` builds passed.
 
 - Updated the installed native app at its original launcher-compatible path and reopened it after confirming there were no active production tasks. Existing episodes and the legacy music brief were retained. The GUI showed Ask agent for More Options and disabled Prepare form in Chrome for that legacy brief, confirming mandatory-option enforcement. No CLI permission dialog was approved automatically.
+
+## CLI pause, queue and late-result recovery
+
+- Confirmed the original failure chain: Metadata paused on a permission request, its old wall-clock deadline elapsed, then Unity visual QA rejected the still-blocked shared CLI. The Metadata JSON arrived later and was schema-valid.
+- Permission pauses now suspend both the agent's 30-minute active budget and the engine's four-hour active-work budget. Busy/blocked confirmed sessions wait, including a uniquely verified but not-yet-idle Client launcher pane; missing-connection timeout is no longer applied to a proven busy launcher.
+- Added Waiting for CLI / Waiting for Permission states, cancellation controls and an explicit Herdr permission instruction. Queued adapters do not acquire prompt ownership or interrupt another task. Task start timestamps survive pause/resume transitions.
+- Added explicit Metadata recovery with original result filename/process/turn, size/mtime, schema, input/dependency checksum and duplicate-title checks. Fresh prompts record input snapshots; original older tasks retain dependency validation. Canonical output is written atomically and marked Completed with new artifact checksums only after validation.
+- Unity preview stores a durable render checkpoint before QA. Retry reuses unchanged assets and re-renders modified assets, instead of blindly repeating successful work.
+- **104 Python tests pass**, covering paused inner and outer budgets, busy bound and discovered sessions, queued cancellation, rejected/accepted late metadata, and verified/tampered preview checkpoints. Frontend compilation passed.
+
+- Live native verification: recovered the original late Metadata result through Recover saved result with no new provider prompt. Retried Unity Preview; it entered Waiting for Permission, resumed after the user/provider resolved the prompt, completed visual QA and reached Completed. Both tasks' persisted artifact SHA-256 checks passed. Visual Approval is now Waiting for Approval; no creative gate was approved automatically.
+- The visual QA report identifies substantial reference mismatch: the procedural preview is an abstract symmetrical hall, while the reference depicts a claustrophobic subway interior. Successful orchestration does not imply visual acceptance. The generated preview and QA report are delivered for the user's review before final rendering.

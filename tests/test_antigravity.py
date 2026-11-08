@@ -241,3 +241,77 @@ async def test_replacement_launcher_gets_new_identity_before_next_prompt(tmp_pat
     s.terminal['labels']['launch_id']='b'*32
     assert await s.auto_connect()
     assert s.binding['pid']!=old['pid'] and s.binding['nonce']!=old['nonce']
+
+async def test_permission_time_does_not_exhaust_active_budget(tmp_path):
+    s=ClientFixture(tmp_path);await s.bind('t7',True);s.complete=False
+    a=AntigravityAdapter(s);a.poll_interval=.003
+    job=asyncio.create_task(a.launch(tmp_path,'Task','paused.json',lambda _:None,timeout=.04))
+    await s.sent.wait();s.terminal['status']['state']='blocked'
+    await asyncio.sleep(.1)
+    assert not job.done()
+    (tmp_path/'paused.json').write_text('{"ok":true}')
+    s.terminal['turn']+=1;s.terminal['status']['state']='done'
+    assert await job=={'ok':True}
+    assert not any(c[0] in ('keys','interrupt') for c in s.calls)
+
+async def test_busy_bound_cli_waits_without_failing_or_sending(tmp_path):
+    s=ClientFixture(tmp_path,wait_seconds=.02);await s.bind('t7',True)
+    s.terminal['status']['state']='blocked';states=[]
+    a=AntigravityAdapter(s,on_state=states.append)
+    job=asyncio.create_task(a.launch(tmp_path,'Task','queued.json',lambda _:None))
+    await asyncio.sleep(.06)
+    assert not job.done() and not s.sent.is_set() and 'waiting_blocked' in states
+    s.terminal['status']['state']='idle'
+    assert (await job)['brief']=='A quiet atmosphere'
+    assert sum(c[0]=='send' for c in s.calls)==1
+
+async def test_marked_busy_launcher_is_not_mistaken_for_missing_cli(tmp_path):
+    s=ClientFixture(tmp_path,wait_seconds=.02);mark_client_launcher(s,tmp_path)
+    s.terminal['status']['state']='blocked';states=[]
+    a=AntigravityAdapter(s,on_state=states.append)
+    job=asyncio.create_task(a.launch(tmp_path,'Task','found-busy.json',lambda _:None))
+    await asyncio.sleep(.06)
+    assert not job.done() and not s.sent.is_set() and 'waiting_blocked' in states
+    s.terminal['status']['state']='idle'
+    assert (await job)['brief']=='A quiet atmosphere'
+
+async def test_queue_cancellation_never_interrupts_another_prompt(tmp_path):
+    s=ClientFixture(tmp_path);await s.bind('t7',True);s.complete=False
+    first=AntigravityAdapter(s);first.poll_interval=.005
+    active=asyncio.create_task(first.launch(tmp_path,'First','active1.json',lambda _:None))
+    await s.sent.wait();states=[]
+    queued=asyncio.create_task(AntigravityAdapter(s,on_state=states.append).launch(tmp_path,'Next','active2.json',lambda _:None))
+    await asyncio.sleep(.01);assert 'queued' in states
+    queued.cancel()
+    with pytest.raises(asyncio.CancelledError): await queued
+    assert not any(c[0]=='interrupt' for c in s.calls)
+    active.cancel()
+    with pytest.raises(asyncio.CancelledError): await active
+
+async def test_late_metadata_recovers_only_valid_original_result(tmp_path):
+    from backend.integrations.process import checksum
+    store=Store(tmp_path/'late.db');settings=Settings(working_directory=str(tmp_path/'episodes'),agent_kind='antigravity')
+    engine=Engine(store,settings.working_directory,settings);s=ClientFixture(tmp_path);engine._client_session=s
+    eid=engine.create(EpisodeInput(name='Late metadata',audio_url='https://youtu.be/dQw4w9WgXcQ',channel_url='https://youtube.com/@ambient').model_dump())
+    root=engine.directory(eid)
+    for task,name,data in [('channel_reference','channel_titles.json',['source title']),('music_brief','music_brief.json',{'brief':'Original music'}),('visual_reference','visual_reference.json',{'scene':'corridor'})]:
+        (root/name).write_text(json.dumps(data));store.update(eid,task,'Completed',data={'artifacts':[name],'artifact_checksums':{name:checksum(root/name)}})
+    identity={'pane':'t7','pid':123,'created_ms':100,'executable':str(s.agy),'transport':'herdr-core-existing-session','result':'metadata-'+'a'*32+'.json','before_turn':0}
+    store.update(eid,'metadata','Running');store.update(eid,'metadata','Failed',error='Timeout',data={'identity':identity})
+    s.terminal['turn']=1;s.terminal['status']['state']='done'
+    result=dict(titles=['one','two','three','four','five'],recommended='one',description='A quiet original atmosphere',hashtags='#ambient, #liminal')
+    file=root/identity['result'];file.write_text(json.dumps(result))
+    # Schema-valid output still cannot duplicate reference titles.
+    bad={**result,'titles':['source title','two','three','four','five'],'recommended':'source title'}
+    file.write_text(json.dumps(bad))
+    with pytest.raises(ValueError,match='duplicates'): await engine.recover_late_result(eid,'metadata')
+    assert store.task(eid,'metadata')['status']=='Failed' and not (root/'metadata.json').exists()
+    file.write_text(json.dumps(result));s.terminal['foreground']['pid']=124
+    with pytest.raises(ValueError,match='Original CLI'): await engine.recover_late_result(eid,'metadata')
+    s.terminal['foreground']['pid']=123
+    await engine.recover_late_result(eid,'metadata')
+    task=store.task(eid,'metadata')
+    assert task['status']=='Completed' and not task['error'] and task['data']['result']==result
+    assert task['data']['artifact_checksums']['metadata.json']==checksum(root/'metadata.json')
+    assert not any(c[0] in ('send','run','keys') for c in s.calls)
+    with pytest.raises(ValueError,match='inactive failed'): await engine.recover_late_result(eid,'metadata')

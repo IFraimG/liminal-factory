@@ -195,3 +195,57 @@ async def test_production_preflight_needs_no_youtube_key(monkeypatch,setup):
     await engine.start(episode)
     assert engine.enabled(episode)
     assert DAG['audio_reference']==[] and DAG['channel_reference']==[]
+
+@pytest.mark.parametrize('tamper',[False,True])
+async def test_unity_retry_resumes_verified_preview_or_rebuilds_changed_files(setup,monkeypatch,tamper):
+    import backend.orchestration.engine as module
+    from backend.models.schema import SceneSpec
+    store,settings=setup;engine=Engine(store,settings.working_directory,settings)
+    eid=engine.create(EpisodeInput(**BASE).model_dump());root=engine.directory(eid)
+    (root/'visual_reference.json').write_text('{"scene":"corridor"}')
+    (root/'references').mkdir();(root/'references/ref.png').write_bytes(b'reference')
+    (root/'references.json').write_text('["references/ref.png"]')
+    calls={'design':0,'render':0,'qa':0}
+    class Renderer:
+        def __init__(self,*args): pass
+        async def render(self,root,*args):
+            calls['render']+=1;(root/'preview.mp4').write_bytes(b'preview')
+            frames=root/'preview-frames';frames.mkdir(exist_ok=True)
+            (frames/'frame-00000.png').write_bytes(b'frame');(frames/'complete.json').write_text('{}')
+            return {'artifacts':['preview.mp4']}
+    async def ask(e,n,prompt,schema):
+        if schema is SceneSpec:
+            calls['design']+=1
+            return {'result':SceneSpec(explanation='Original procedural corridor scene').model_dump()}
+        calls['qa']+=1
+        if calls['qa']==1: raise RuntimeError('simulated QA interruption')
+        (root/'unity_preview.json').write_text('{"qa":"inspected"}')
+        return {'artifacts':['unity_preview.json'],'result':{'qa':'inspected'}}
+    monkeypatch.setattr(module,'Unity',Renderer);monkeypatch.setattr(engine,'ask',ask);monkeypatch.setattr(engine,'tool',lambda n:n)
+    with pytest.raises(RuntimeError,match='QA interruption'): await engine.dispatch(eid,'unity_preview')
+    assert store.task(eid,'unity_preview')['data']['preview_checkpoint']
+    if tamper: (root/'preview-frames/frame-00000.png').write_bytes(b'changed')
+    store.update(eid,'visual_reference','Completed');store.update(eid,'unity_preview','Failed')
+    await engine.retry(eid,'unity_preview')
+    assert 'identity' not in store.task(eid,'unity_preview')['data']
+    result=await engine.dispatch(eid,'unity_preview')
+    assert result['qa']=={'qa':'inspected'}
+    assert calls['render']==(2 if tamper else 1) and calls['design']==calls['render']
+    assert calls['qa']==2
+
+async def test_engine_outer_budget_also_excludes_permission_pauses(setup):
+    store,settings=setup;engine=Engine(store,settings.working_directory,settings)
+    eid=engine.create(EpisodeInput(**BASE).model_dump())
+    async def paused(e,n):
+        store.update(e,n,'Waiting for Permission');await asyncio.sleep(.06)
+        store.update(e,n,'Running');return {'ready':True}
+    engine.handlers={'visual_reference':paused}
+    assert await engine.dispatch_with_budget(eid,'visual_reference',budget=.02)=={'ready':True}
+    interrupted=asyncio.Event()
+    async def hangs(e,n):
+        store.update(e,n,'Running')
+        try: await asyncio.sleep(10)
+        finally: interrupted.set()
+    engine.handlers={'visual_reference':hangs}
+    with pytest.raises(TimeoutError,match='active-work'): await engine.dispatch_with_budget(eid,'visual_reference',budget=.02)
+    assert interrupted.is_set()

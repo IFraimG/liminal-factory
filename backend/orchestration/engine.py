@@ -53,7 +53,7 @@ class Engine:
     def enabled(self,e): return bool(self.store.rows('SELECT key FROM cache WHERE key=?',('started:'+e,)))
     async def recover(self):
         # Never kill or trust a saved PID. Reconcile only the persisted Herdr identity.
-        for t in self.store.rows("SELECT * FROM tasks WHERE status IN ('Running','Waiting for Client')"):
+        for t in self.store.rows("SELECT * FROM tasks WHERE status IN ('Running','Waiting for Client','Waiting for CLI','Waiting for Permission')"):
             e,n=t['episode'],t['name']; data=json.loads(t['data']); identity=data.get('identity')
             if identity and identity.get('owned') is False:
                 message='Client task interrupted by restart. Its user-owned pane was left untouched; reconnect the Client-launched session and retry.'
@@ -93,7 +93,7 @@ class Engine:
             context=PROCESS_OBSERVER.set(observe)
             try:
                 for dependency in DAG[n]: self.verify_artifacts(e,dependency)
-                data=await asyncio.wait_for(self.dispatch(e,n),timeout=14400)
+                data=await self.dispatch_with_budget(e,n)
                 data=data or {}
                 data['artifact_checksums']={name:checksum(contained(self.directory(e),name)) for name in data.get('artifacts',[]) if contained(self.directory(e),name).is_file()}
                 t=self.store.task(e,n); self.store.update(e,n,'Completed',data={**t['data'],**(data or {})})
@@ -106,6 +106,20 @@ class Engine:
             finally:
                 PROCESS_OBSERVER.reset(context)
                 self.wake.set()
+    async def dispatch_with_budget(self,e,n,budget=14400):
+        operation=asyncio.create_task(self.dispatch(e,n));last=time.monotonic()
+        paused={'Waiting for Client','Waiting for CLI','Waiting for Permission'}
+        try:
+            while True:
+                done,_=await asyncio.wait({operation},timeout=min(.5,max(.001,budget)))
+                if done: return await operation
+                now=time.monotonic()
+                if self.store.task(e,n)['status'] not in paused: budget-=now-last
+                last=now
+                if budget<=0: raise TimeoutError('Task active-work safety limit reached; CLI queue and permission pauses are excluded.')
+        finally:
+            if not operation.done(): operation.cancel()
+            await asyncio.gather(operation,return_exceptions=True)
     def verify_artifacts(self,e,n):
         data=self.store.task(e,n)['data']
         for name,digest in data.get('artifact_checksums',{}).items():
@@ -119,6 +133,10 @@ class Engine:
     async def ask(self,e,n,prompt,schema):
         root=self.directory(e); result=f'{n}-{uuid.uuid4().hex}.json'
         def save(identity):
+            snapshot={}
+            for dependency in DAG[n]:
+                for path in self.store.task(e,dependency)['data'].get('artifacts',[]): snapshot[path]=checksum(contained(root,path))
+            identity={**identity,'input_checksums':snapshot,'result_schema':schema.__name__}
             data=self.store.task(e,n)['data']; self.store.update(e,n,data={**data,'identity':identity})
         adapter=self.herdr(n)
         if isinstance(adapter,AntigravityAdapter):
@@ -127,7 +145,18 @@ class Engine:
                 self.store.log(e,n,'Waiting for Antigravity Client → CLI → your confirmed idle Herdr pane. No direct Gemini/agy launch.')
             adapter.on_wait=waiting
             adapter.on_ready=lambda:self.store.update(e,n,'Running')
-            adapter.on_state=lambda state:self.store.log(e,n,'Client CLI is waiting for your permission/auth response in Herdr; no dialog is auto-approved.' if state=='blocked' else 'Client CLI state: '+state)
+            def state_changed(state):
+                if state in {'blocked','waiting_blocked'}:
+                    self.store.update(e,n,'Waiting for Permission')
+                    message='CLI is waiting for your permission in Herdr. Active-time timer is paused; no dialog is auto-approved.'
+                elif state in {'queued','waiting_busy'}:
+                    self.store.update(e,n,'Waiting for CLI')
+                    message='Queued for the connected CLI; no prompt sent by this task yet.'
+                else:
+                    self.store.update(e,n,'Running')
+                    message='Client CLI state: '+state
+                self.store.log(e,n,message)
+            adapter.on_state=state_changed
         feedback=self.store.task(e,n)['data'].get('feedback','')
         if feedback: prompt+='\nUser requested changes (creative guidance only): '+feedback
         try:
@@ -165,11 +194,24 @@ class Engine:
             await process_audio(paths,root/'final.wav',c['duration_minutes']*60,c['audio_mode'],self.tool('ffmpeg'),self.tool('ffprobe'))
             return {'artifacts':['final.wav','final.report.json']}
         if n=='unity_preview':
-            spec=await self.ask(e,n,'Read visual_reference.json and design a procedural Unity scene using the available parameters. Choose numeric scene values matching the actual brief. Style: '+c['style'],SceneSpec)
-            (root/'scene_spec.json').write_text(json.dumps(spec['result'],indent=2))
-            result=await Unity(self.tool('unity'),self.tool('ffmpeg')).render(root,c,True)
-            data=self.store.task(e,n)['data']; self.store.update(e,n,data={**data,**result})
-            # A real image-capable model performs visual QA; it is an additional required artifact.
+            checkpoint=self.store.task(e,n)['data'].get('preview_checkpoint')
+            reuse=bool(checkpoint)
+            if reuse:
+                try:
+                    for path,digest in checkpoint['checksums'].items():
+                        if checksum(contained(root,path))!=digest: reuse=False;break
+                except (OSError,KeyError,ValueError): reuse=False
+            if reuse:
+                result={'artifacts':checkpoint['artifacts']}
+                self.store.log(e,n,'Reusing verified Unity preview; resuming visual QA only.')
+            else:
+                spec=await self.ask(e,n,'Read visual_reference.json and design a procedural Unity scene using the available parameters. Choose numeric scene values matching the actual brief. Style: '+c['style'],SceneSpec)
+                (root/'scene_spec.json').write_text(json.dumps(spec['result'],indent=2))
+                result=await Unity(self.tool('unity'),self.tool('ffmpeg')).render(root,c,True)
+                paths=set(result['artifacts']+['scene_spec.json','visual_reference.json','references.json','preview-frames/frame-00000.png','preview-frames/complete.json'])
+                paths.update(json.loads((root/'references.json').read_text()))
+                checkpoint={'artifacts':result['artifacts'],'checksums':{path:checksum(contained(root,path)) for path in paths}}
+                data=self.store.task(e,n)['data']; self.store.update(e,n,data={**data,**result,'preview_checkpoint':checkpoint})
             qa=await self.ask(e,n,'Inspect preview-frames/frame-00000.png and the actual images in references/. Compare architecture, palette, framing and atmosphere. Describe discrepancies and suggestions truthfully, using the VisualBrief fields. Do not claim a match without inspecting both.',VisualBrief)
             return {'artifacts':result['artifacts']+qa['artifacts'],'qa':qa['result']}
         if n=='visual_render':
@@ -196,11 +238,48 @@ class Engine:
         identity=self.store.task(e,n)['data'].get('identity')
         if identity: await self.herdr(n).cancel(identity)
         self.store.update(e,n,'Cancelled')
+    async def recover_late_result(self,e,n):
+        if n!='metadata': raise ValueError('Saved-result recovery is supported for Metadata; multi-stage tasks require Retry.')
+        task=self.store.task(e,n)
+        if task['status']!='Failed' or (e,n) in self.running: raise ValueError('Only an inactive failed task can recover a saved result')
+        root=self.directory(e);identity=task['data'].get('identity') or {}
+        import re
+        filename=identity.get('result','')
+        if not re.fullmatch(r'metadata-[0-9a-f]{32}\.json',filename): raise ValueError('This task has no recorded result filename')
+        path=contained(root,filename)
+        if not path.is_file(): raise ValueError('The recorded result file has not arrived yet')
+        if path.stat().st_size>4*1024*1024: raise ValueError('Saved result exceeds 4 MB')
+        if not task['started'] or path.stat().st_mtime<task['started']: raise ValueError('Saved result predates this task')
+        if identity.get('transport')!='herdr-core-existing-session': raise ValueError('Unsupported saved-result origin')
+        session=self.client_session()
+        terminal=await session.command('get',identity.get('pane',''),'--json')
+        fp=session.fingerprint(terminal)
+        if any(fp[k]!=identity.get(k if k!='address' else 'pane') for k in fp): raise ValueError('Original CLI process cannot be verified; inspect the saved result manually')
+        if session.word(terminal) not in {'idle','done'}: raise ValueError('Wait for the original CLI turn to finish before recovering its result')
+        if 'before_turn' in identity and terminal.get('turn',0)<=identity['before_turn']: raise ValueError('Original CLI turn has not completed')
+        for dependency in DAG[n]:
+            if self.store.task(e,dependency)['status'] not in SUCCESS: raise ValueError('Complete dependencies before recovery')
+            self.verify_artifacts(e,dependency)
+        for filename,digest in identity.get('input_checksums',{}).items():
+            if checksum(contained(root,filename))!=digest: raise ValueError('Task inputs changed since the prompt was sent')
+        current_task=self.store.task(e,n)
+        if current_task['status']!='Failed' or current_task['data'].get('identity')!=identity or (e,n) in self.running:
+            raise ValueError('Task changed during recovery; reload its state')
+        checked=Metadata.model_validate_json(path.read_text()).model_dump()
+        originals={s.casefold() for s in json.loads((root/'channel_titles.json').read_text())}
+        if any(title.casefold() in originals for title in checked['titles']): raise ValueError('Generated title duplicates a channel reference')
+        temp=root/('metadata-recovered-'+uuid.uuid4().hex+'.tmp')
+        temp.write_text(json.dumps(checked,indent=2));temp.replace(root/'metadata.json')
+        self.store.update(e,n,'Completed',error='',data={**task['data'],'result':checked,'artifacts':['metadata.json'],'artifact_checksums':{'metadata.json':checksum(root/'metadata.json')},'recovered_from':str(path.relative_to(root))})
+        self.store.log(e,n,'Recovered late structured result after schema, original CLI and dependency validation. No new model prompt was sent.')
+        self.wake.set();return {'recovered':True}
     async def retry(self,e,n):
         if n not in DAG: raise ValueError('Unknown task')
         if self.store.task(e,n)['status'] not in {'Failed','Cancelled'}: raise ValueError('Only failed/cancelled tasks can be retried')
         if any(self.store.task(e,d)['status'] not in SUCCESS for d in DAG[n]): raise ValueError('Complete dependencies first')
-        self.store.update(e,n,'Pending',error='',data={}); self.wake.set()
+        old=self.store.task(e,n)['data']
+        preserved={'preview_checkpoint':old['preview_checkpoint']} if n=='unity_preview' and old.get('preview_checkpoint') else {}
+        self.store.update(e,n,'Pending',error='',data=preserved); self.wake.set()
     async def request_changes(self,e,n,reason):
         if n not in GATES: raise ValueError('Changes require an approval gate')
         # Invalidate all transitive downstream consumers before rerunning upstream work.

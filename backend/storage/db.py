@@ -24,7 +24,7 @@ class Store:
         t=self.task(e,n)
         self.execute('UPDATE tasks SET status=?,error=?,data=?,started=?,finished=? WHERE episode=? AND name=?',(
             status or t['status'],error if error is not None else t['error'],json.dumps(data if data is not None else t['data']),
-            time.time() if status=='Running' else t['started'],time.time() if status in ('Completed','Approved','Failed','Cancelled') else t['finished'],e,n))
+            None if status=='Pending' else time.time() if status=='Running' and t['started'] is None else t['started'],None if status=='Pending' else time.time() if status in ('Completed','Approved','Failed','Cancelled') else t['finished'],e,n))
     def log(self,e,n,msg): self.execute('INSERT INTO logs(episode,task,message,created) VALUES(?,?,?,?)',(e,n,msg,time.time()))
     def config(self,e):
         r=self.rows('SELECT config FROM episodes WHERE id=?',(e,))

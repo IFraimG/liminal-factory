@@ -6,7 +6,7 @@ import re
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 class Status(StrEnum):
-    pending='Pending'; running='Running'; waiting_client='Waiting for Client'; waiting='Waiting for Approval'; approved='Approved'; failed='Failed'; completed='Completed'; cancelled='Cancelled'
+    pending='Pending'; running='Running'; waiting_client='Waiting for Client'; waiting_cli='Waiting for CLI'; waiting_permission='Waiting for Permission'; waiting='Waiting for Approval'; approved='Approved'; failed='Failed'; completed='Completed'; cancelled='Cancelled'
 
 def youtube_url(value: str, channel=False):
     p=urlparse(value)

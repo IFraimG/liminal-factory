@@ -134,7 +134,7 @@ async def episodes():
         config=json.loads(row['config']); tasks=store.rows('SELECT * FROM tasks WHERE episode=?',(row['id'],))
         for task in tasks: task['data']=json.loads(task['data'])
         statuses=[t['status'] for t in tasks]
-        status='Completed' if all(s in ('Completed','Approved') for s in statuses) else next((s for s in ('Failed','Waiting for Client','Running','Waiting for Approval','Cancelled') if s in statuses),'Pending')
+        status='Completed' if all(s in ('Completed','Approved') for s in statuses) else next((s for s in ('Failed','Waiting for Permission','Waiting for CLI','Waiting for Client','Running','Waiting for Approval','Cancelled') if s in statuses),'Pending')
         output.append({'id':row['id'],'config':config,'created':row['created'],'status':status,'progress':sum(s in ('Completed','Approved') for s in statuses)/len(tasks),'tasks':tasks})
     return output
 
@@ -171,7 +171,8 @@ async def start(e:str):
 @app.post('/episodes/{e}/tasks/{n}/{action}')
 async def task_action(e:str,n:str,action:str,request:Request):
     store.config(e)
-    if action=='retry': await engine.retry(e,n)
+    if action=='recover-result': await engine.recover_late_result(e,n)
+    elif action=='retry': await engine.retry(e,n)
     elif action=='cancel': await engine.cancel(e,n)
     elif action=='approve': await engine.approve(e,n)
     elif action=='changes': await engine.request_changes(e,n,(await request.json()).get('reason','Please revise the brief'))
