@@ -9,7 +9,11 @@ async def probe(path,ffprobe='ffprobe'):
 async def assemble(audio:Path,loop:Path,out:Path,config,ffmpeg='ffmpeg',ffprobe='ffprobe'):
     w,h={'1080p':(1920,1080),'1440p':(2560,1440),'4K':(3840,2160)}[config['resolution']]
     seconds=config['duration_minutes']*60; fps=config['fps']
-    await run([ffmpeg,'-y','-v','warning','-stream_loop','-1','-i',str(loop),'-i',str(audio),'-t',str(seconds),'-map','0:v:0','-map','1:a:0','-vf',f'scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps={fps}', '-c:v','libx264','-preset','fast','-crf','20','-pix_fmt','yuv420p','-c:a','aac','-b:a','192k','-movflags','+faststart',str(out)],timeout=max(600,seconds*20),log=out.with_suffix('.log'))
+    loop_args=[] if config.get('recording_minutes') else ['-stream_loop','-1']
+    if config.get('recording_minutes'):
+        source=await probe(loop,ffprobe)
+        if abs(float(source['format']['duration'])-seconds)>max(.1,1/fps):raise RuntimeError('Unity recording duration does not match the user input')
+    await run([ffmpeg,'-y','-v','warning',*loop_args,'-i',str(loop),'-i',str(audio),'-t',str(seconds),'-map','0:v:0','-map','1:a:0','-vf',f'scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps={fps}', '-c:v','libx264','-preset','fast','-crf','20','-pix_fmt','yuv420p','-c:a','aac','-b:a','192k','-movflags','+faststart',str(out)],timeout=max(600,seconds*20),log=out.with_suffix('.log'))
     report=await probe(out,ffprobe)
     video=next((s for s in report['streams'] if s['codec_type']=='video'),None)
     audio_stream=next((s for s in report['streams'] if s['codec_type']=='audio'),None)

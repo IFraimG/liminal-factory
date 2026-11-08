@@ -28,6 +28,7 @@ class EpisodeInput(BaseModel):
     analysis_minutes: float=Field(default=5,gt=0,le=30)
     permission: bool=False
     duration_minutes: float=Field(default=60,gt=0,le=180)
+    recording_minutes: float|None=Field(default=None,gt=0,le=180)
     resolution: str='1080p'
     fps: int=24
     audio_mode: str='Seamless Loop'
@@ -69,7 +70,7 @@ class Settings(BaseModel):
     @field_validator('agent_kind')
     @classmethod
     def kind(cls,v):
-        if v not in {'codex','gemini','antigravity'}: raise ValueError('Use codex or antigravity')
+        if v not in {'codex','gemini','antigravity','kimi'}: raise ValueError('Use codex or antigravity')
         return v
 
 class SunoOptions(BaseModel):
@@ -120,4 +121,31 @@ class SceneSpec(BaseModel):
     tint_r: float=Field(default=.48,ge=.1,le=.85)
     tint_g: float=Field(default=.48,ge=.1,le=.85)
     tint_b: float=Field(default=.35,ge=.1,le=.85)
+    scene_type: Literal['subway_car','enclosed_corridor']='enclosed_corridor'
+    seat_layout: Literal['longitudinal','transverse']='transverse'
+    camera_x: float=Field(default=.25,ge=-1.4,le=1.4)
+    camera_y: float=Field(default=1.15,ge=.5,le=2.2)
+    camera_z: float=Field(default=-3,ge=-7,le=7)
+    camera_pitch: float=Field(default=3,ge=-30,le=30)
+    camera_yaw: float=Field(default=35,ge=-180,le=180)
+    camera_roll: float=Field(default=-10,ge=-25,le=25)
+    include_figure: bool=False
     explanation: str=Field(min_length=10)
+
+class SceneDesign(SceneSpec):
+    seat_layout: Literal['longitudinal','transverse']
+    scene_type: Literal['subway_car','enclosed_corridor']
+    camera_x: float=Field(ge=-1.4,le=1.4)
+    camera_y: float=Field(ge=.5,le=2.2)
+    camera_z: float=Field(ge=-7,le=7)
+    camera_pitch: float=Field(ge=-30,le=30)
+    camera_yaw: float=Field(ge=-180,le=180)
+    camera_roll: float=Field(ge=-25,le=25)
+    include_figure: bool
+
+class RecordingPlan(BaseModel):
+    duration_minutes: float=Field(gt=0,le=180)
+    fps: Literal[24,30,60]
+    resolution: Literal['1080p','1440p','4K']
+    camera: Literal['approved_scene_camera']
+    explanation: str=Field(min_length=20,max_length=3000)

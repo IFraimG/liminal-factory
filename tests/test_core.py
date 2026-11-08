@@ -199,7 +199,7 @@ async def test_production_preflight_needs_no_youtube_key(monkeypatch,setup):
 @pytest.mark.parametrize('tamper',[False,True])
 async def test_unity_retry_resumes_verified_preview_or_rebuilds_changed_files(setup,monkeypatch,tamper):
     import backend.orchestration.engine as module
-    from backend.models.schema import SceneSpec
+    from backend.models.schema import SceneDesign
     store,settings=setup;engine=Engine(store,settings.working_directory,settings)
     eid=engine.create(EpisodeInput(**BASE).model_dump());root=engine.directory(eid)
     (root/'visual_reference.json').write_text('{"scene":"corridor"}')
@@ -214,9 +214,9 @@ async def test_unity_retry_resumes_verified_preview_or_rebuilds_changed_files(se
             (frames/'frame-00000.png').write_bytes(b'frame');(frames/'complete.json').write_text('{}')
             return {'artifacts':['preview.mp4']}
     async def ask(e,n,prompt,schema):
-        if schema is SceneSpec:
+        if schema is SceneDesign:
             calls['design']+=1
-            return {'result':SceneSpec(explanation='Original procedural corridor scene').model_dump()}
+            return {'result':SceneDesign(seat_layout='transverse',scene_type='enclosed_corridor',camera_x=.25,camera_y=1.15,camera_z=-3,camera_pitch=3,camera_yaw=35,camera_roll=-10,include_figure=False,explanation='Original procedural corridor scene').model_dump()}
         calls['qa']+=1
         if calls['qa']==1: raise RuntimeError('simulated QA interruption')
         (root/'unity_preview.json').write_text('{"qa":"inspected"}')

@@ -185,7 +185,7 @@ class AntigravityAdapter:
             before=await self.session.await_ready(self.on_state)
             if self.on_ready: self.on_ready()
             binding=self.session.binding
-            identity={'agent':'agy','pane':binding['address'],'result':result_file,'owned':False,'transport':'herdr-core-existing-session','session_nonce':binding['nonce'],'before_turn':before.get('turn',0),**{k:binding[k] for k in ('created_ms','pid','executable')}}
+            identity={'agent':'kimi' if self.session.__class__.__name__=='KimiSession' else 'agy','pane':binding['address'],'result':result_file,'owned':False,'transport':'herdr-core-existing-session','session_nonce':binding['nonce'],'before_turn':before.get('turn',0),**{k:binding[k] for k in ('created_ms','pid','executable')}}
             result=contained(root,result_file)
             if result.exists(): raise ClientSessionError('Result path already exists')
             save_identity(identity)

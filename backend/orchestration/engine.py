@@ -3,7 +3,9 @@ from pathlib import Path
 from backend.orchestration.workflow import DAG,GATES,AGENT_TASKS
 from backend.orchestration.herdr_adapter import HerdrAdapter
 from backend.integrations.antigravity import AntigravitySession,AntigravityAdapter
-from backend.models.schema import MusicBrief,SunoMusicBrief,VisualBrief,Metadata,SceneSpec
+from backend.integrations.kimi import KimiSession
+from backend.integrations.quota import QuotaRouter
+from backend.models.schema import MusicBrief,SunoMusicBrief,VisualBrief,Metadata,SceneSpec,SceneDesign,RecordingPlan
 from backend.integrations.process import checksum,contained,PROCESS_OBSERVER
 from backend.integrations.unity import Unity
 from backend.integrations.youtube import channel_titles
@@ -18,7 +20,7 @@ class Engine:
     def __init__(self,store,root,settings,adapter=None,handlers=None):
         self.store=store; self.root=Path(root); self.settings=settings; self.adapter=adapter
         self.semaphore=asyncio.Semaphore(settings.max_concurrent_agents); self.running={}; self.wake=asyncio.Event(); self.stopping=False
-        self.handlers=handlers or {}; self.scheduler=None; self._client_session=None
+        self.handlers=handlers or {}; self.scheduler=None; self._client_session=None; self._kimi_session=None; self.quota=QuotaRouter(); self.quota_poll_interval=10
     def directory(self,e): return contained(self.root,e)
     def tool(self,name):
         value=self.settings.tools.get(name) or shutil.which(name)
@@ -28,8 +30,13 @@ class Engine:
         if self._client_session is None:
             self._client_session=AntigravitySession(self.tool('hc'),self.settings.tools.get('agy'),self.settings.antigravity_port,self.settings.antigravity_wait_seconds,expected_cwd=self.root)
         return self._client_session
+    def kimi_session(self):
+        if self._kimi_session is None:
+            self._kimi_session=KimiSession(self.tool('hc'),self.settings.tools.get('kimi'),self.settings.antigravity_wait_seconds,self.root)
+        return self._kimi_session
     def herdr(self,task=''):
         if self.adapter: return self.adapter
+        if task=='recording_setup' or self.settings.agent_kind=='kimi': return AntigravityAdapter(self.kimi_session())
         if self.settings.agent_kind in {'gemini','antigravity'}: return AntigravityAdapter(self.client_session())
         return HerdrAdapter(self.tool('herdr'),self.settings.agent_kind,self.settings.agent_models.get(task,self.settings.model),[str(Path(self.tool(self.settings.agent_kind)).parent)])
     def create(self,config):
@@ -52,6 +59,8 @@ class Engine:
         self.wake.set()
     def enabled(self,e): return bool(self.store.rows('SELECT key FROM cache WHERE key=?',('started:'+e,)))
     async def recover(self):
+        for row in self.store.rows('SELECT id FROM episodes'):
+            for name in DAG:self.store.execute('INSERT OR IGNORE INTO tasks(episode,name) VALUES(?,?)',(row['id'],name))
         # Never kill or trust a saved PID. Reconcile only the persisted Herdr identity.
         for t in self.store.rows("SELECT * FROM tasks WHERE status IN ('Running','Waiting for Client','Waiting for CLI','Waiting for Permission')"):
             e,n=t['episode'],t['name']; data=json.loads(t['data']); identity=data.get('identity')
@@ -76,6 +85,7 @@ class Engine:
                     key=(e,n); t=self.store.task(e,n)
                     if key in self.running or t['status']!='Pending': continue
                     if not all(self.store.task(e,d)['status'] in SUCCESS for d in deps): continue
+                    if n=='recording_setup' and not self.store.config(e).get('recording_minutes'): continue
                     if n in GATES:
                         self.store.update(e,n,'Waiting for Approval'); self.store.log(e,n,'User approval required'); continue
                     # Claim synchronously before yielding to prevent duplicate scheduling.
@@ -138,11 +148,19 @@ class Engine:
                 for path in self.store.task(e,dependency)['data'].get('artifacts',[]): snapshot[path]=checksum(contained(root,path))
             identity={**identity,'input_checksums':snapshot,'result_schema':schema.__name__}
             data=self.store.task(e,n)['data']; self.store.update(e,n,data={**data,'identity':identity})
-        adapter=self.herdr(n)
-        if isinstance(adapter,AntigravityAdapter):
+        provider=self.settings.agent_kind
+        if not self.adapter and n!='recording_setup':
+            selected=await self.quota.choose(provider,self.settings.tools.get('codex') or shutil.which('codex'))
+            if selected=='kimi':
+                self.store.log(e,n,'Using Kimi: primary remaining quota is below 5% or cannot be verified. See Settings quota status; unknown is not treated as a full balance.')
+                adapter=AntigravityAdapter(self.kimi_session())
+            else: adapter=self.herdr(n)
+        else: adapter=self.herdr(n)
+        def connect_callbacks(adapter):
+            if not isinstance(adapter,AntigravityAdapter):return
             def waiting():
-                self.store.update(e,n,'Waiting for Client')
-                self.store.log(e,n,'Waiting for Antigravity Client → CLI → your confirmed idle Herdr pane. No direct Gemini/agy launch.')
+                self.store.update(e,n,'Waiting for CLI' if isinstance(adapter.session,KimiSession) else 'Waiting for Client')
+                self.store.log(e,n,'Waiting for the dedicated Kimi Herdr pane.' if isinstance(adapter.session,KimiSession) else 'Waiting for Antigravity Client → CLI → your confirmed idle Herdr pane. No direct Gemini/agy launch.')
             adapter.on_wait=waiting
             adapter.on_ready=lambda:self.store.update(e,n,'Running')
             def state_changed(state):
@@ -157,14 +175,35 @@ class Engine:
                     message='Client CLI state: '+state
                 self.store.log(e,n,message)
             adapter.on_state=state_changed
+        connect_callbacks(adapter)
         feedback=self.store.task(e,n)['data'].get('feedback','')
         if feedback: prompt+='\nUser requested changes (creative guidance only): '+feedback
+        operation=None
         try:
-            data=await adapter.launch(root,REFERENCE_POLICY+'\n'+prompt+'\nRequired JSON schema: '+json.dumps(schema.model_json_schema()),result,save)
+            full_prompt=REFERENCE_POLICY+'\n'+prompt+'\nRequired JSON schema: '+json.dumps(schema.model_json_schema())
+            operation=asyncio.create_task(adapter.launch(root,full_prompt,result,save))
+            while True:
+                done,_=await asyncio.wait({operation},timeout=self.quota_poll_interval)
+                if done:
+                    data=await operation;break
+                if not self.adapter and provider=='codex' and isinstance(adapter,HerdrAdapter):
+                    remaining=await self.quota.read(provider,self.settings.tools.get('codex') or shutil.which('codex'))
+                    if remaining is not None and remaining>=5:continue
+                    identity=self.store.task(e,n)['data'].get('identity')
+                    if not identity:continue
+                    # A handoff starts only after the owned primary pane was closed successfully.
+                    if await adapter.cancel(identity) is not True:raise RuntimeError('Cannot verify primary CLI stopped; Kimi handoff was not started')
+                    operation.cancel();await asyncio.gather(operation,return_exceptions=True)
+                    self.store.log(e,n,'Primary quota fell below 5% or became unavailable. Primary pane stopped; continuing the task in Kimi with the same verified source files.')
+                    adapter=AntigravityAdapter(self.kimi_session());connect_callbacks(adapter)
+                    result=f'{n}-{uuid.uuid4().hex}.json'
+                    operation=asyncio.create_task(adapter.launch(root,full_prompt,result,save))
             checked=schema.model_validate(data).model_dump()
             (root/f'{n}.json').write_text(json.dumps(checked,indent=2))
             return {'artifacts':[f'{n}.json'],'result':checked}
         finally:
+            if operation and not operation.done():
+                operation.cancel();await asyncio.gather(operation,return_exceptions=True)
             identity=self.store.task(e,n)['data'].get('identity')
             if identity:
                 try:
@@ -205,7 +244,7 @@ class Engine:
                 result={'artifacts':checkpoint['artifacts']}
                 self.store.log(e,n,'Reusing verified Unity preview; resuming visual QA only.')
             else:
-                spec=await self.ask(e,n,'Read visual_reference.json and design a procedural Unity scene using the available parameters. Choose numeric scene values matching the actual brief. Style: '+c['style'],SceneSpec)
+                spec=await self.ask(e,n,'Inspect the actual images in references/ and read visual_reference.json. Choose scene_type subway_car for an enclosed train interior or enclosed_corridor for a corridor. Select seat_layout transverse for rows of high-backed seats perpendicular to the walls (as in the supplied train reference), or longitudinal for continuous wall benches. Subway geometry includes opaque walls and ceiling, dark framed windows, brown bench seats, rails, hanging rings, fluorescent fixtures and optional seated hooded figure. Unity axes: yaw 0 looks toward +Z; positive yaw looks toward +X. The optional figure sits on the right bench near (1.08, 1.0, 0.7). Keep it in view when included. A verified low diagonal starting camera is (-0.25, 1.13, -3), pitch 2, yaw 43, roll -12, FOV 64. Choose camera position, pitch, yaw, roll and FOV to match the reference composition. Explain limitations honestly; do not describe objects the renderer cannot build. Style: '+c['style'],SceneDesign)
                 (root/'scene_spec.json').write_text(json.dumps(spec['result'],indent=2))
                 result=await Unity(self.tool('unity'),self.tool('ffmpeg')).render(root,c,True)
                 paths=set(result['artifacts']+['scene_spec.json','visual_reference.json','references.json','preview-frames/frame-00000.png','preview-frames/complete.json'])
@@ -214,13 +253,20 @@ class Engine:
                 data=self.store.task(e,n)['data']; self.store.update(e,n,data={**data,**result,'preview_checkpoint':checkpoint})
             qa=await self.ask(e,n,'Inspect preview-frames/frame-00000.png and the actual images in references/. Compare architecture, palette, framing and atmosphere. Describe discrepancies and suggestions truthfully, using the VisualBrief fields. Do not claim a match without inspecting both.',VisualBrief)
             return {'artifacts':result['artifacts']+qa['artifacts'],'qa':qa['result']}
+        if n=='recording_setup':
+            minutes=c.get('recording_minutes')
+            if not minutes: raise ValueError('Enter recording duration in minutes before recording')
+            data=await self.ask(e,n,'Prepare the Unity recording of the approved scene. Read scene_spec.json and unity_preview.json. Return the exact user duration '+str(minutes)+' minutes, fps '+str(c['fps'])+', resolution '+c['resolution']+'. camera must be approved_scene_camera. Explain the setup; do not change the scene, create agents or start recording yourself. The application performs the validated capture after this plan.',RecordingPlan)
+            plan=data['result']
+            if (plan['duration_minutes'],plan['fps'],plan['resolution'])!=(minutes,c['fps'],c['resolution']): raise ValueError('Kimi recording plan changed user duration or output settings')
+            return data
         if n=='visual_render':
             self.verify_approval(e,'visual_approval')
             return await Unity(self.tool('unity'),self.tool('ffmpeg')).render(root,c,False)
         if n=='final_assembly':
             self.verify_approval(e,'music_approval'); self.verify_approval(e,'visual_approval')
             out=root/'output'; out.mkdir(exist_ok=True)
-            await assemble(root/'final.wav',root/'visual-loop.mp4',out/'final.mp4',c,self.tool('ffmpeg'),self.tool('ffprobe'))
+            await assemble(root/'final.wav',root/('visual-recording.mp4' if c.get('recording_minutes') else 'visual-loop.mp4'),out/'final.mp4',c,self.tool('ffmpeg'),self.tool('ffprobe'))
             shutil.copy2(root/'metadata.json',out/'metadata.json')
             if c.get('output_directory'):
                 destination=Path(c['output_directory']).expanduser().resolve()/('liminal-'+e)
@@ -228,6 +274,17 @@ class Engine:
                 shutil.copy2(out/'final.mp4',destination/'final.mp4'); shutil.copy2(out/'metadata.json',destination/'metadata.json')
             return {'artifacts':['output/final.mp4','output/metadata.json']}
         raise ValueError('Unknown task '+n)
+    async def set_recording_duration(self,e,minutes):
+        if not isinstance(minutes,(int,float)) or isinstance(minutes,bool) or not 0<minutes<=180:raise ValueError('Enter a duration above 0 and at most 180 minutes')
+        config=self.store.config(e)
+        if any(key[0]==e for key in self.running):raise ValueError('Wait for active episode tasks before changing recording duration')
+        config.update(recording_minutes=minutes,duration_minutes=minutes)
+        self.store.execute('UPDATE episodes SET config=? WHERE id=?',(json.dumps(config),e))
+        for name in ('recording_setup','visual_render','audio_engineer','final_assembly'):
+            self.store.execute('INSERT OR IGNORE INTO tasks(episode,name) VALUES(?,?)',(e,name))
+            self.store.update(e,name,'Pending',error='',data={})
+        self.store.log(e,'recording_setup',f'User set Unity recording duration to {minutes} minutes; Kimi will prepare the approved camera capture.')
+        self.wake.set()
     async def cancel(self,e,n):
         if n not in DAG: raise ValueError('Unknown task')
         task=self.running.get((e,n))
@@ -251,7 +308,7 @@ class Engine:
         if path.stat().st_size>4*1024*1024: raise ValueError('Saved result exceeds 4 MB')
         if not task['started'] or path.stat().st_mtime<task['started']: raise ValueError('Saved result predates this task')
         if identity.get('transport')!='herdr-core-existing-session': raise ValueError('Unsupported saved-result origin')
-        session=self.client_session()
+        session=self.kimi_session() if identity.get('agent')=='kimi' else self.client_session()
         terminal=await session.command('get',identity.get('pane',''),'--json')
         fp=session.fingerprint(terminal)
         if any(fp[k]!=identity.get(k if k!='address' else 'pane') for k in fp): raise ValueError('Original CLI process cannot be verified; inspect the saved result manually')
@@ -282,6 +339,8 @@ class Engine:
         self.store.update(e,n,'Pending',error='',data=preserved); self.wake.set()
     async def request_changes(self,e,n,reason):
         if n not in GATES: raise ValueError('Changes require an approval gate')
+        reason=reason.strip()
+        if len(reason)<3 or len(reason)>8000: raise ValueError('Describe the requested changes in 3–8000 characters')
         # Invalidate all transitive downstream consumers before rerunning upstream work.
         source='music_brief' if n=='music_approval' else 'unity_preview'
         affected={source,n}; changed=True

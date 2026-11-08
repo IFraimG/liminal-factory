@@ -25,7 +25,7 @@ def get_settings():
     s=Settings.model_validate_json(row[0]['data']) if row else Settings(working_directory=str(HOME/'episodes'))
     if s.agent_kind=='gemini': s.agent_kind='antigravity'
     if not s.working_directory: s.working_directory=str(HOME/'episodes')
-    defaults={'hc':str(Path.home()/'.local/bin/hc'),'agy':str(Path.home()/'.local/bin/agy'),'ffmpeg':'/opt/homebrew/bin/ffmpeg','ffprobe':'/opt/homebrew/bin/ffprobe','yt-dlp':'/opt/homebrew/bin/yt-dlp','codex':'/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex'}
+    defaults={'kimi':str(Path.home()/'.kimi-code/bin/kimi'),'hc':str(Path.home()/'.local/bin/hc'),'agy':str(Path.home()/'.local/bin/agy'),'ffmpeg':'/opt/homebrew/bin/ffmpeg','ffprobe':'/opt/homebrew/bin/ffprobe','yt-dlp':'/opt/homebrew/bin/yt-dlp','codex':'/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex'}
     for name,path in defaults.items():
         if name not in s.tools and Path(path).is_file(): s.tools[name]=path
     unity=discover()
@@ -149,13 +149,23 @@ async def detail(e:str):
     for t in tasks:
         for file in t['data'].get('artifacts',[]):
             path=contained(root,file)
-            if path.is_file(): artifacts.append({'name':file,'size':path.stat().st_size})
+            if path.is_file(): artifacts.append({'name':file,'size':path.stat().st_size,'modified':path.stat().st_mtime_ns})
     refs=[]
     manifest=root/'references.json'
     names=json.loads(manifest.read_text()) if manifest.exists() else []
     for path in names:
         if contained(root,path).is_file(): refs.append(path)
     return {'id':e,'config':config,'tasks':tasks,'logs':store.rows('SELECT * FROM logs WHERE episode=? ORDER BY id DESC LIMIT 300',(e,)),'artifacts':artifacts,'references':refs,'music':[str(p.relative_to(root)) for p in sorted((root/'music').glob('*'))]}
+
+@app.put('/episodes/{e}/recording')
+async def recording_duration(e:str,request:Request):
+    await engine.set_recording_duration(e,(await request.json()).get('minutes'));return {'ok':True}
+
+@app.get('/agents/quotas')
+async def agent_quotas():return {'providers':engine.quota.latest,'unknown_policy':'Use Kimi when the primary balance cannot be verified','threshold_percent':5}
+
+@app.get('/kimi/status')
+async def kimi_status():return await engine.kimi_session().status()
 
 @app.post('/episodes/{e}/start')
 async def start(e:str):

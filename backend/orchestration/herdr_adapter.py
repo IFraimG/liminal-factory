@@ -56,12 +56,14 @@ class HerdrAdapter:
             await asyncio.sleep(2)
         raise TimeoutError('Agent did not produce its structured artifact')
     async def cancel(self,identity):
-        if not identity: return
+        if not identity: return False
         try: await self.cli('agent','send-keys',identity['agent'],'ctrl+c',timeout=10)
         except Exception: pass
         # Close only the pane created and persisted by this adapter, terminating its agent.
-        try: await self.cli('pane','close',identity['pane'],timeout=10)
-        except Exception: pass
+        try:
+            await self.cli('pane','close',identity['pane'],timeout=10)
+            return True
+        except Exception: return False
     async def logs(self,identity): return await self.cli('agent','read',identity['agent'],'--source','recent-unwrapped','--lines','120',raw=True)
 
 class MockHerdrAdapter:
