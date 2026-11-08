@@ -1,0 +1,5 @@
+export interface Config {name:string;audio_url:string;channel_url:string;start_seconds:number;analysis_minutes:number;permission:boolean;duration_minutes:number;resolution:string;fps:number;audio_mode:string;loop_seconds:number;style:string;output_directory:string}
+export interface Task {name:string;status:string;error:string;data:{artifacts?:string[];result?:Record<string,unknown>;identity?:{agent:string;pane:string};[key:string]:unknown};started:number|null;finished:number|null}
+export interface Episode {id:string;config:Config;created:number;status:string;progress:number;tasks:Task[]}
+export interface Detail {id:string;config:Config;tasks:Task[];logs:{id:number;task:string;message:string;created:number}[];artifacts:{name:string;size:number}[];references:string[];music:string[]}
+export interface Settings {working_directory:string;max_concurrent_agents:number;agent_kind:string;model:string;vision_enabled:boolean;appearance:string;cache_hours:number;tools:Record<string,string>;agent_models:Record<string,string>}

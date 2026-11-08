@@ -1,0 +1,15 @@
+node_modules/
+.venv/
+__pycache__/
+.pytest_cache/
+dist/
+work/
+outputs/
+src-tauri/target/
+src-tauri/binaries/*
+*.spec
+.DS_Store
+
+*.tsbuildinfo
+*.egg-info/
+src-tauri/gen/

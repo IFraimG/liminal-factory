@@ -1,0 +1,147 @@
+import asyncio,json
+from pathlib import Path
+import pytest
+from pydantic import ValidationError
+from backend.models.schema import EpisodeInput,Metadata,Settings,youtube_url
+from backend.integrations.process import contained,checksum
+from backend.storage.db import Store
+from backend.orchestration.engine import Engine
+from backend.orchestration.workflow import DAG
+from backend.orchestration.herdr_adapter import HerdrAdapter,MockHerdrAdapter
+
+BASE=dict(name='Test atmosphere',audio_url='https://www.youtube.com/watch?v=dQw4w9WgXcQ',channel_url='https://www.youtube.com/@ambient',permission=True)
+
+@pytest.mark.parametrize('url',['http://youtube.com/watch?v=dQw4w9WgXcQ','https://youtube.com.evil.org/watch?v=dQw4w9WgXcQ','https://youtube.com@evil.org/watch?v=dQw4w9WgXcQ','file:///tmp/test','https://youtu.be/../../x','https://youtube.com:444/watch?v=dQw4w9WgXcQ'])
+def test_hostile_urls(url):
+    with pytest.raises(ValueError): youtube_url(url)
+
+def test_schema_and_hashtags():
+    assert EpisodeInput(**BASE).duration_minutes==60
+    with pytest.raises(ValidationError): EpisodeInput(**BASE,fps=25)
+    good=dict(titles=['one','two','three','four','five'],recommended='one',description='An atmosphere',hashtags='#liminalspace, #ambientmusic')
+    assert Metadata(**good).hashtags.startswith('#')
+    for invalid in ['#one #two','one, #two','#one,#two','#one, ']:
+        with pytest.raises(ValidationError): Metadata(**{**good,'hashtags':invalid})
+
+def test_containment(tmp_path):
+    with pytest.raises(ValueError): contained(tmp_path,'../outside')
+    (tmp_path/'link').symlink_to('/etc')
+    with pytest.raises(ValueError): contained(tmp_path,'link/passwd')
+
+async def until(predicate,timeout=3):
+    deadline=asyncio.get_running_loop().time()+timeout
+    while not predicate():
+        if asyncio.get_running_loop().time()>deadline: raise AssertionError('Timed out')
+        await asyncio.sleep(.01)
+
+@pytest.fixture
+def setup(tmp_path):
+    s=Store(tmp_path/'db.sqlite'); settings=Settings(working_directory=str(tmp_path/'episodes'),max_concurrent_agents=3)
+    return s,settings
+
+async def test_parallel_claim_retry_cancel_and_gates(setup):
+    store,settings=setup; active=0; peak=0; calls={}
+    async def handler(e,n):
+        nonlocal active,peak
+        calls[n]=calls.get(n,0)+1; active+=1; peak=max(peak,active)
+        try: await asyncio.sleep(.08)
+        finally: active-=1
+        if n=='channel_reference' and calls[n]==1: raise RuntimeError('Quota exhausted')
+        return {'artifacts':[]}
+    engine=Engine(store,settings.working_directory,settings,handlers={n:handler for n in DAG})
+    e=engine.create(EpisodeInput(**BASE).model_dump());store.execute('INSERT INTO cache VALUES(?,?,?)',('started:'+e,'true',0))
+    engine.scheduler=asyncio.create_task(engine.serve())
+    try:
+        await until(lambda:store.task(e,'music_approval')['status']=='Waiting for Approval' and store.task(e,'channel_reference')['status']=='Failed')
+        assert peak==3
+        assert calls['audio_reference']==1
+        assert 'final_assembly' not in calls
+        await engine.retry(e,'channel_reference')
+        await until(lambda:store.task(e,'channel_reference')['status']=='Completed')
+        await engine.cancel(e,'music_approval');assert store.task(e,'music_approval')['status']=='Cancelled'
+        await engine.retry(e,'music_approval')
+        await until(lambda:store.task(e,'music_approval')['status']=='Waiting for Approval')
+        assert 'audio_engineer' not in calls
+    finally: await engine.close()
+
+async def test_approval_checksum_and_invalidation(setup):
+    store,s=setup; engine=Engine(store,s.working_directory,s)
+    e=engine.create(EpisodeInput(**BASE).model_dump());root=engine.directory(e);(root/'music').mkdir();(root/'music/track.wav').write_bytes(b'music');(root/'music_brief.json').write_text('{}')
+    store.update(e,'music_approval','Waiting for Approval');await engine.approve(e,'music_approval')
+    assert store.task(e,'music_approval')['status']=='Approved'
+    engine.verify_approval(e,'music_approval')
+    (root/'music/track.wav').write_bytes(b'tampered')
+    with pytest.raises(ValueError,match='changed'): engine.verify_approval(e,'music_approval')
+    store.update(e,'final_assembly','Completed')
+    await engine.request_changes(e,'music_approval','less rhythm')
+    assert store.task(e,'music_approval')['status']=='Pending'
+    assert store.task(e,'final_assembly')['status']=='Pending'
+    assert store.task(e,'metadata')['status']=='Pending'
+
+async def test_restart_never_trusts_pid(setup):
+    store,s=setup;engine=Engine(store,s.working_directory,s);e=engine.create(EpisodeInput(**BASE).model_dump())
+    store.update(e,'audio_reference','Running',data={'pid':1})
+    reloaded=Store(Path(s.working_directory).parent/'db.sqlite')
+    other=Engine(reloaded,s.working_directory,s);await other.recover()
+    assert reloaded.task(e,'audio_reference')['status']=='Failed'
+    assert 'retry' in reloaded.task(e,'audio_reference')['error'].lower()
+
+async def test_herdr_pane_before_agent_and_result(tmp_path):
+    class Recording(HerdrAdapter):
+        def __init__(self): super().__init__();self.calls=[]
+        async def check(self): return {}
+        async def cli(self,*args,**kwargs):
+            self.calls.append(args)
+            if args[:2]==('workspace','create'): return {'result':{'root_pane':{'pane_id':'w7:p3'}}}
+            if args[:2]==('agent','prompt'): (tmp_path/'result.json').write_text('{"valid":true}')
+            return {}
+    adapter=Recording(); identities=[]
+    assert await adapter.launch(tmp_path,'test','result.json',identities.append,timeout=.1)=={'valid':True}
+    assert adapter.calls[0][:2]==('workspace','create')
+    assert adapter.calls[1][adapter.calls[1].index('--pane')+1]=='w7:p3'
+    assert identities[0]['pane']=='w7:p3'
+
+async def test_idle_without_artifact_is_not_success(tmp_path):
+    class Idle(HerdrAdapter):
+        async def cli(self,*args,**kwargs): return {'result':{'state':'idle'}}
+    with pytest.raises(TimeoutError): await Idle().wait(tmp_path,{'agent':'test','result':'absent.json'},timeout=.01)
+
+async def test_youtube_pagination_and_cache(monkeypatch,tmp_path):
+    import httpx
+    import backend.integrations.youtube as yt
+    requests=[]
+    def handler(request):
+        requests.append(request)
+        if request.url.path.endswith('/channels'): return httpx.Response(200,json={'items':[{'contentDetails':{'relatedPlaylists':{'uploads':'UU123'}}}]})
+        if request.url.params.get('pageToken'): return httpx.Response(200,json={'items':[{'snippet':{'title':'second'}}]})
+        return httpx.Response(200,json={'items':[{'snippet':{'title':'first'}}],'nextPageToken':'page2'})
+    real=httpx.AsyncClient
+    monkeypatch.setattr(yt.httpx,'AsyncClient',lambda **kw:real(transport=httpx.MockTransport(handler),**kw))
+    store=Store(tmp_path/'db');result=await yt.channel_titles(BASE['channel_url'],'fake-key',store)
+    assert result==['first','second'];assert len(requests)==3
+    assert await yt.channel_titles(BASE['channel_url'],'',store)==result
+    assert len(requests)==3
+
+async def test_subprocess_timeout_terminates():
+    from backend.integrations.process import run
+    import sys
+    with pytest.raises(asyncio.TimeoutError): await run([sys.executable,'-c','import time;time.sleep(30)'],timeout=.1)
+
+async def test_process_identity_is_recorded():
+    from backend.integrations.process import run,PROCESS_OBSERVER
+    import sys
+    records=[];token=PROCESS_OBSERVER.set(records.append)
+    try: assert (await run([sys.executable,'-c','print("hello")'])).strip()=='hello'
+    finally: PROCESS_OBSERVER.reset(token)
+    assert records[0]['active'] is True and records[0]['pid']>0
+    assert records[-1]['active'] is False and records[-1]['returncode']==0
+    assert records[0]['instance']==records[-1]['instance']
+
+async def test_dependency_artifact_tampering_fails(setup):
+    store,s=setup;engine=Engine(store,s.working_directory,s)
+    e=engine.create(EpisodeInput(**BASE).model_dump());p=engine.directory(e)/'analysis.json';p.write_text('{}')
+    store.update(e,'audio_reference','Completed',data={'artifact_checksums':{'analysis.json':checksum(p)}})
+    p.write_text('{"edited":true}')
+    store.update(e,'music_brief','Running');await engine.execute(e,'music_brief')
+    assert store.task(e,'music_brief')['status']=='Failed'
+    assert 'changed' in store.task(e,'music_brief')['error']
