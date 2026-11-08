@@ -7,7 +7,6 @@ from backend.models.schema import MusicBrief,VisualBrief,Metadata,SceneSpec
 from backend.integrations.process import checksum,contained,PROCESS_OBSERVER
 from backend.integrations.unity import Unity
 from backend.integrations.youtube import channel_titles
-from backend.integrations.secrets import secret
 from backend.agents.providers import REFERENCE_POLICY
 from backend.audio.reference import analyze
 from backend.audio.engineer import process_audio
@@ -46,7 +45,6 @@ class Engine:
         for tool in ('ffmpeg','ffprobe','yt-dlp','unity'): self.tool(tool)
         await self.herdr().check()
         if not self.settings.vision_enabled: raise ValueError('Enable image-capable agent support in Settings after verifying your model can inspect local images')
-        if not secret('youtube_api_key'): raise ValueError('Configure the YouTube API key in Settings first')
         if self.settings.agent_kind in {'gemini','antigravity'}:
             await self.client_session().prepare()
         self.store.log(e,'system','Production started')
@@ -155,7 +153,7 @@ class Engine:
             images=[str(contained(root,p)) for p in json.loads((root/'references.json').read_text())]
             return await self.ask(e,n,'Use your image viewing capability to inspect these actual images: '+json.dumps(images)+'. If you cannot inspect pixels, fail explicitly; do not infer their content from filenames. Describe the scene for a procedural Unity interpretation.',VisualBrief)
         if n=='channel_reference':
-            titles=await channel_titles(c['channel_url'],secret('youtube_api_key'),self.store,self.settings.cache_hours)
+            titles=await channel_titles(c['channel_url'],self.tool('yt-dlp'),self.store,self.settings.cache_hours,self.settings.yt_dlp_use_chrome_cookies,self.settings.yt_dlp_chrome_profile)
             (root/'channel_titles.json').write_text(json.dumps(titles)); return {'artifacts':['channel_titles.json'],'count':len(titles)}
         if n=='metadata':
             result=await self.ask(e,n,'Read channel_titles.json, music_brief.json and visual_reference.json. Analyze title patterns and create 5 original titles, recommended title, description and hashtags as #tag, #tag. Do not copy source titles or make performance claims.',Metadata)

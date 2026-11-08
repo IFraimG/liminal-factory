@@ -4,9 +4,9 @@ from pathlib import Path
 
 PROCESS_OBSERVER=ContextVar('process_observer',default=None)
 
-async def run(args:list[str],cwd=None,timeout=120,log:Path|None=None,sanitize=None):
+async def run(args:list[str],cwd=None,timeout=120,log:Path|None=None,sanitize=None,stdout_only=False):
     # Shell interpolation is unavailable. Process handles, never persisted PIDs, authorize cancellation.
-    process=await asyncio.create_subprocess_exec(*map(str,args),cwd=cwd,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.STDOUT,start_new_session=True)
+    process=await asyncio.create_subprocess_exec(*map(str,args),cwd=cwd,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE if stdout_only else asyncio.subprocess.STDOUT,start_new_session=True)
     observer=PROCESS_OBSERVER.get()
     identity={'pid':process.pid,'executable':str(args[0]),'instance':uuid.uuid4().hex,'started':time.time(),'active':True}
     if observer: observer(identity)
@@ -22,9 +22,11 @@ async def run(args:list[str],cwd=None,timeout=120,log:Path|None=None,sanitize=No
                 await process.wait()
             raise
         text=output[0].decode(errors='replace')
-        if sanitize: text=sanitize(text)
-        if log: log.write_text(text)
-        if process.returncode: raise RuntimeError(f'{Path(str(args[0])).name} exited {process.returncode}: {text[-2500:]}')
+        diagnostics=(output[1] or b'').decode(errors='replace') if stdout_only else text
+        if sanitize: diagnostics=sanitize(diagnostics)
+        if log: log.write_text(diagnostics)
+        if process.returncode: raise RuntimeError(f'{Path(str(args[0])).name} exited {process.returncode}: {diagnostics[-2500:]}')
+        if not stdout_only: text=diagnostics
         return text
     finally:
         if observer: observer({**identity,'active':False,'returncode':process.returncode})

@@ -14,13 +14,13 @@
 - Real FFmpeg tests exercised all three audio modes with exact short durations, crossfades and peak verification, plus 1080p H.264/AAC assembly and sampled decoding.
 - A separate **real 3600.0-second stereo WAV** stress test completed using synthetic tones (test input only): -18.01 LUFS, -14.18 dBTP, sample peak 0.1953421831, no clipping. Final WAV was removed after verification to avoid retaining a gigabyte of test audio. Its processing JSON is included with the deliverables.
 
-Automated tests cover URL/domain rejection, model validation, hashtag format, path traversal/symlink escape, task claims and parallelism, retries/cancellation/approval gates, approval and dependency tampering, restart handling without trusting PIDs, Herdr pane-before-agent contract, idle without artifact rejection, YouTube pagination/cache using an HTTP mock, process timeouts/identity, API auth/persistence, actual image/audio import, media byte ranges and locked approved music.
+Automated tests cover URL/domain rejection, model validation, hashtag format, path traversal/symlink escape, task claims and parallelism, retries/cancellation/approval gates, approval and dependency tampering, restart handling without trusting PIDs, Herdr pane-before-agent contract, idle without artifact rejection, yt-dlp channel tabs/deduplication/cache using controlled subprocess output, process timeouts/identity, API auth/persistence, actual image/audio import, media byte ranges and locked approved music.
 
 ## Environment blockers / unverified integrations
 
 - Installed `Herdr.app` does not supply the required TUI CLI on PATH. Existing `~/.local/bin/herdr-core` reports `hc 0.1.18` and rejects `agent` and `status`; it is not silently substituted for the documented Herdr TUI. Real agent execution remains unverified. The adapter fails clearly and links installation instructions.
 - Codex executable exists; provider login/model image capabilities have not been exercised. Gemini is absent from PATH. No user credentials were read or generated.
-- YouTube Data API key has not been configured, and no copyrighted reference was downloaded. Pagination/cache are tested with controlled API responses, not claimed as a live channel analysis.
+- YouTube Data API is no longer required. A live yt-dlp channel extraction retrieved 322 titles without an API key; details appear in the keyless update below. Full reference audio was not downloaded by this channel check.
 - Unity 6000.6.5f1 is installed. A real batch project creation attempt produced licensing errors: no entitlement groups/free entitlements; `com.unity.editor.headless` not found. It reached the configured timeout. C# compilation and image rendering are therefore **not verified**. Unity logs are not included because they contain machine/license identifiers; error handling includes the local log for the user.
 - `npm run tauri build` generated `.app` but the DMG stage failed with `hdiutil: create failed - Device not configured`. App-only build subsequently passed. DMG configuration remains available for a normal macOS environment.
 - GUI initially failed to launch via the automation app lookup; Finder successfully opened the app. This was a UI automation lookup issue, not treated as proof that the app worked before the visible window was observed.
@@ -61,3 +61,11 @@ Apple Developer signing/notarization; test external binaries and Unity licensing
 - Herdr Core 0.1.18 retains `done` after a turn and rejects `--if idle` in that state. Completed-state readiness is now accepted; normal Core send retains its blocked-dialog rejection. Actual empty-input checks confirmed the mismatch and supported default-send behavior without submitting another model task.
 - In the rebuilt `.app`, enabled and saved `vision_enabled=true`, left Chrome cookies enabled, and reconnected the same Client pane to visible Ready. Read-only SQLite inspection confirmed both saved booleans. Production was not started during this settings fix.
 - **62 tests pass**, including waiting through a permission pause with no injected approval and accepting the next task from a completed CLI state. Release `.app` build passed.
+
+## YouTube without an API key
+
+- Removed the global YouTube key preflight and replaced Data API calls with yt-dlp public channel extraction. Audio extraction remains an independent DAG branch.
+- The channel root is extracted with flat playlist metadata and automatic continuation pagination, including public videos/shorts/streams returned by yt-dlp. IDs are deduplicated across tabs, original title text is retained, and a source-specific TTL cache prevents reuse of old API results. Failed or malformed extraction is not cached.
+- Channel extraction shares the existing, user-authorized Chrome profile setting. Subprocess stdout JSON is separated from stderr diagnostics so redaction never corrupts titles; errors and diagnostic logs are redacted.
+- Real metadata-only verification on `https://www.youtube.com/@midwichmusic`: **322 titles**, **20.7 seconds**, Chrome cookies enabled, **no API key**. No audio or model generation was initiated in this check. See `outputs/youtube-channel-verification.json`.
+- **69 tests pass**, including no-key production preflight, nested channel tabs/cache expiry, malformed output rejection, URL validation before browser access, and separate JSON/diagnostic handling. Frontend compilation and release app build passed.

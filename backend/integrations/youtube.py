@@ -1,33 +1,41 @@
+"""Public channel metadata via yt-dlp; no YouTube Data API credential needed."""
 import json,time
-import httpx
 from urllib.parse import urlparse
 from backend.models.schema import youtube_url
+from backend.integrations.process import run
+from backend.integrations.download import chrome_cookie_args,redact_download_output
 
-async def channel_titles(url,key,store,cache_hours=24):
+async def channel_titles(url,executable,store,cache_hours=24,chrome_cookies=False,chrome_profile=''):
     youtube_url(url,True)
-    cached=store.rows('SELECT * FROM cache WHERE key=?',(url,))
-    if cached and time.time()-cached[0]['created']<cache_hours*3600: return json.loads(cached[0]['data'])
-    if not key: raise RuntimeError('YouTube API key missing. Enable YouTube Data API v3 in Google Cloud and save a restricted API key in Settings → YouTube (macOS Keychain).')
-    async with httpx.AsyncClient(timeout=30) as client:
-        async def get(resource,params):
-            # Do not propagate httpx exceptions containing the credential-bearing URL.
-            try:
-                r=await client.get('https://www.googleapis.com/youtube/v3/'+resource,params={**params,'key':key})
-                if r.status_code!=200: raise RuntimeError(f'YouTube API returned HTTP {r.status_code}; verify key/quota')
-                return r.json()
-            except httpx.HTTPError: raise RuntimeError('YouTube API network request failed') from None
-        path=urlparse(url).path.strip('/')
-        query={'forHandle':path[1:]} if path.startswith('@') else {'id':path.split('/')[1]}
-        channels=await get('channels',{'part':'contentDetails',**query})
-        if not channels.get('items'): raise RuntimeError('Channel not found')
-        playlist=channels['items'][0]['contentDetails']['relatedPlaylists']['uploads']
-        titles=[]; token=''; seen=set()
-        while True:
-            data=await get('playlistItems',{'part':'snippet','playlistId':playlist,'maxResults':50,**({'pageToken':token} if token else {})})
-            titles += [i['snippet']['title'] for i in data.get('items',[]) if i['snippet']['title'] not in ('Deleted video','Private video')]
-            token=data.get('nextPageToken','')
-            if not token: break
-            if token in seen: raise RuntimeError('YouTube pagination returned a repeated token')
-            seen.add(token)
-    store.execute('INSERT OR REPLACE INTO cache VALUES(?,?,?)',(url,json.dumps(titles),time.time()))
+    # Use the root channel: yt-dlp discovers its public videos, shorts and streams
+    # tabs and follows continuations. Never limit extraction to the first page.
+    channel='https://www.youtube.com/'+urlparse(url).path.strip('/')
+    cache_key='yt-dlp:channel:v1:'+channel
+    cached=store.rows('SELECT * FROM cache WHERE key=?',(cache_key,))
+    if cached and time.time()-cached[0]['created']<cache_hours*3600:
+        return json.loads(cached[0]['data'])
+    raw=await run([executable,'--ignore-config','--no-cache-dir',
+        *chrome_cookie_args(chrome_cookies,chrome_profile),
+        '--flat-playlist','--skip-download','--dump-single-json','--abort-on-error',
+        '--socket-timeout','30','--retries','2','--extractor-retries','2',
+        '--',channel],timeout=900,stdout_only=True,sanitize=redact_download_output)
+    try: data=json.loads(raw)
+    except (ValueError,TypeError): raise RuntimeError('yt-dlp returned invalid channel metadata') from None
+    titles=[]; seen=set()
+    def visit(item):
+        if not isinstance(item,dict): raise RuntimeError('yt-dlp returned invalid channel entries')
+        if 'entries' in item:
+            entries=item['entries']
+            if not isinstance(entries,list): raise RuntimeError('yt-dlp returned incomplete channel entries')
+            for entry in entries: visit(entry)
+            return
+        title=item.get('title'); identity=item.get('id')
+        if not identity or not isinstance(title,str) or not title.strip():
+            raise RuntimeError('yt-dlp returned an incomplete video entry')
+        if title in ('Deleted video','Private video') or item.get('availability') in ('private','premium_only','subscriber_only'): return
+        if identity in seen: return
+        seen.add(identity); titles.append(title)
+    visit(data)
+    if not titles: raise RuntimeError('No public channel titles found; check the channel URL and Chrome session')
+    store.execute('INSERT OR REPLACE INTO cache VALUES(?,?,?)',(cache_key,json.dumps(titles),time.time()))
     return titles

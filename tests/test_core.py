@@ -106,21 +106,55 @@ async def test_idle_without_artifact_is_not_success(tmp_path):
         async def cli(self,*args,**kwargs): return {'result':{'state':'idle'}}
     with pytest.raises(TimeoutError): await Idle().wait(tmp_path,{'agent':'test','result':'absent.json'},timeout=.01)
 
-async def test_youtube_pagination_and_cache(monkeypatch,tmp_path):
-    import httpx
+async def test_youtube_public_tabs_and_cache(monkeypatch,tmp_path):
     import backend.integrations.youtube as yt
-    requests=[]
-    def handler(request):
-        requests.append(request)
-        if request.url.path.endswith('/channels'): return httpx.Response(200,json={'items':[{'contentDetails':{'relatedPlaylists':{'uploads':'UU123'}}}]})
-        if request.url.params.get('pageToken'): return httpx.Response(200,json={'items':[{'snippet':{'title':'second'}}]})
-        return httpx.Response(200,json={'items':[{'snippet':{'title':'first'}}],'nextPageToken':'page2'})
-    real=httpx.AsyncClient
-    monkeypatch.setattr(yt.httpx,'AsyncClient',lambda **kw:real(transport=httpx.MockTransport(handler),**kw))
-    store=Store(tmp_path/'db');result=await yt.channel_titles(BASE['channel_url'],'fake-key',store)
-    assert result==['first','second'];assert len(requests)==3
-    assert await yt.channel_titles(BASE['channel_url'],'',store)==result
-    assert len(requests)==3
+    calls=[]
+    async def extract(args,**kwargs):
+        calls.append((args,kwargs))
+        return json.dumps({'entries':[{'entries':[{'id':'v1','title':'first?token=literal'}]},
+            {'entries':[{'id':'v2','title':'second'},{'id':'v1','title':'duplicate'},
+            {'id':'v3','title':'Private video'}]}]})
+    monkeypatch.setattr(yt,'run',extract)
+    store=Store(tmp_path/'db')
+    result=await yt.channel_titles(BASE['channel_url'],'yt-dlp',store,chrome_cookies=True,chrome_profile='Profile 1')
+    assert result==['first?token=literal','second']
+    args,kw=calls[0]
+    assert args[args.index('--cookies-from-browser')+1]=='chrome:Profile 1'
+    assert '--flat-playlist' in args and '--dump-single-json' in args
+    assert '--playlist-end' not in args and '--abort-on-error' in args
+    assert kw['stdout_only'] is True
+    assert await yt.channel_titles(BASE['channel_url'],'yt-dlp',store)==result
+    assert len(calls)==1
+    await yt.channel_titles(BASE['channel_url'],'yt-dlp',store,cache_hours=0)
+    assert len(calls)==2
+
+@pytest.mark.parametrize('payload',[None,{'entries':[None]},{'entries':[]},{'entries':[{'id':'x'}]}])
+async def test_youtube_incomplete_not_cached(monkeypatch,tmp_path,payload):
+    import backend.integrations.youtube as yt
+    async def extract(*args,**kwargs): return json.dumps(payload)
+    monkeypatch.setattr(yt,'run',extract)
+    store=Store(tmp_path/'db')
+    with pytest.raises(RuntimeError): await yt.channel_titles(BASE['channel_url'],'yt-dlp',store)
+    assert not store.rows('SELECT * FROM cache')
+
+async def test_youtube_bad_url_before_process(monkeypatch,tmp_path):
+    import backend.integrations.youtube as yt
+    async def forbidden(*args,**kwargs): raise AssertionError('must validate before cookie access')
+    monkeypatch.setattr(yt,'run',forbidden)
+    with pytest.raises(ValueError): await yt.channel_titles('https://evil.example/@foo','yt-dlp',Store(tmp_path/'db'),chrome_cookies=True)
+
+async def test_json_stdout_separated_from_redacted_diagnostics(tmp_path):
+    import sys
+    from backend.integrations.process import run
+    from backend.integrations.download import redact_download_output
+    log=tmp_path/'stderr.log'
+    code='import sys; print(\' {"title":"https://example.com/?exact=title"} \'); print("Cookie: secret",file=sys.stderr)'
+    result=await run([sys.executable,'-c',code],stdout_only=True,sanitize=redact_download_output,log=log)
+    assert json.loads(result)['title']=='https://example.com/?exact=title'
+    assert 'secret' not in log.read_text()
+    with pytest.raises(RuntimeError,match='redacted') as error:
+        await run([sys.executable,'-c',code+';sys.exit(1)'],stdout_only=True,sanitize=redact_download_output)
+    assert 'secret' not in str(error.value)
 
 async def test_subprocess_timeout_terminates():
     from backend.integrations.process import run
@@ -145,3 +179,19 @@ async def test_dependency_artifact_tampering_fails(setup):
     store.update(e,'music_brief','Running');await engine.execute(e,'music_brief')
     assert store.task(e,'music_brief')['status']=='Failed'
     assert 'changed' in store.task(e,'music_brief')['error']
+
+async def test_production_preflight_needs_no_youtube_key(monkeypatch,setup):
+    import backend.integrations.secrets as secrets
+    store,settings=setup
+    settings.vision_enabled=True
+    class Ready:
+        async def check(self): return True
+    engine=Engine(store,settings.working_directory,settings,adapter=Ready())
+    episode=engine.create(EpisodeInput(**BASE).model_dump())
+    refs=engine.directory(episode)/'references';refs.mkdir();(refs/'ref.png').write_bytes(b'reference')
+    monkeypatch.setattr(engine,'tool',lambda name:'/test/'+name)
+    def forbidden(*args): raise AssertionError('production must not request an API key')
+    monkeypatch.setattr(secrets,'secret',forbidden)
+    await engine.start(episode)
+    assert engine.enabled(episode)
+    assert DAG['audio_reference']==[] and DAG['channel_reference']==[]
