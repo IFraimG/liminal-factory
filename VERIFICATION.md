@@ -10,7 +10,7 @@
 - Opened `.app` from Finder. Observed the native window, dashboard, connected local backend, navigation and New Episode form.
 - Through the actual native Open dialog selected a project-owned PNG, observed its thumbnail, filled valid YouTube fields and saved `Local validation draft`. Observed Episode Details with three DAG branches and the real creation log. No download consent was granted; no external production was started.
 - Read-only inspection confirmed 1 episode and 11 persisted tasks in the application's SQLite database.
-- Application was closed cleanly through its Quit shortcut before final archive creation.
+- Application was closed cleanly through its Quit shortcut, relaunched, and the Episodes screen visibly restored `Local validation draft` with Pending status and the connected backend. The application is left open.
 - Real FFmpeg tests exercised all three audio modes with exact short durations, crossfades and peak verification, plus 1080p H.264/AAC assembly and sampled decoding.
 - A separate **real 3600.0-second stereo WAV** stress test completed using synthetic tones (test input only): -18.01 LUFS, -14.18 dBTP, sample peak 0.1953421831, no clipping. Final WAV was removed after verification to avoid retaining a gigabyte of test audio. Its processing JSON is included with the deliverables.
 

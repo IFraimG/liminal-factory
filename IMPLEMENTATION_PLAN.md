@@ -5,6 +5,7 @@
 - [x] Authenticated loopback Python API, SQLite WAL persistence
 - [x] Episode creation, references, settings, per-tool diagnostics
 - [x] Actual packaged macOS window opened; PNG imported and draft saved through UI
+- [x] Native app quit/relaunch restored the episode from SQLite
 
 ## Phase 2 — Orchestration
 - [x] Persistent asynchronous DAG, bounded concurrency, retry/cancel/approval
