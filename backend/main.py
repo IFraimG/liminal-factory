@@ -221,6 +221,18 @@ async def references(e:str,request:Request):
     for name in set(old)-set(names): contained(root,name).unlink()
     manifest.write_text(json.dumps(names)); return {'ok':True}
 
+@app.post('/episodes/{e}/suno/prepare')
+async def suno_prepare(e:str,request:Request):
+    from backend.integrations.suno import SunoDraftRequest,prepare_draft
+    config=store.config(e)
+    if store.task(e,'music_approval')['status']!='Waiting for Approval':
+        raise ValueError('Prepare Suno only while music is awaiting approval')
+    engine.verify_artifacts(e,'music_brief')
+    draft=SunoDraftRequest.model_validate(await request.json())
+    result=prepare_draft(engine.directory(e),config,draft)
+    store.log(e,'music_brief','Suno form handoff prepared; generation and downloads require separate user action.')
+    return result
+
 @app.put('/episodes/{e}/prompts')
 async def prompts(e:str,brief:MusicBrief):
     root=engine.directory(e)

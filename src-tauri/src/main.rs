@@ -8,6 +8,13 @@ struct Backend { child:Mutex<Child>, bridge:Bridge }
 fn bridge(state:tauri::State<Backend>)->Bridge { state.bridge.clone() }
 #[tauri::command]
 fn open_suno()->Result<(),String> {Command::new("/usr/bin/open").arg("https://suno.com/create").spawn().map(|_|()).map_err(|e|e.to_string())}
+#[tauri::command]
+fn open_suno_draft(url:String)->Result<(),String> {
+ let prefix="https://suno.com/create#liminal-draft=";
+ let payload=url.strip_prefix(prefix).ok_or("Invalid Suno preparation URL")?;
+ if payload.is_empty() || payload.len()>10000 || !payload.bytes().all(|c|c.is_ascii_alphanumeric() || c==b'-' || c==b'_') {return Err("Invalid Suno preparation payload".into());}
+ Command::new("/usr/bin/open").args(["-a","Google Chrome",&url]).spawn().map(|_|()).map_err(|e|e.to_string())
+}
 fn main(){
  let app=tauri::Builder::default().plugin(tauri_plugin_dialog::init()).setup(|app|{
    let token=uuid::Uuid::new_v4().to_string()+&uuid::Uuid::new_v4().to_string();
@@ -29,6 +36,6 @@ fn main(){
    let url=value["url"].as_str().ok_or("Backend failed to initialize")?.to_string();
 
    app.manage(Backend{child:Mutex::new(child),bridge:Bridge{url,token}});Ok(())
- }).invoke_handler(tauri::generate_handler![bridge,open_suno]).build(tauri::generate_context!()).expect("Unable to start Liminal Factory backend");
+ }).invoke_handler(tauri::generate_handler![bridge,open_suno,open_suno_draft]).build(tauri::generate_context!()).expect("Unable to start Liminal Factory backend");
  app.run(|handle,event| {if let tauri::RunEvent::Exit=event {if let Some(state)=handle.try_state::<Backend>() {if let Ok(mut child)=state.child.lock() {unsafe{libc::kill(child.id() as i32,libc::SIGTERM);}let _=child.wait();}}}});
 }
