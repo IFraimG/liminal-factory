@@ -41,7 +41,7 @@ Apple Developer signing/notarization; test external binaries and Unity licensing
 - Client origin is user-confirmed. Process identity, idle state and local proxy availability are checked automatically; a replacement process requires reconfirmation. One pane serializes AI tasks, and cancellation/restart never closes or relaunches the user's CLI.
 - The complete suite has **48 passing tests**: 13 session-gate tests and 11 launcher/RPC/environment/quoting tests were added to the original 24. Test credentials are synthetic. No credential-bearing environment values are printed or written by the launcher.
 - TypeScript/Vite build, packaged sidecar launcher entry point, read-only real HC RPC hello/schema checks, and release `.app` build passed.
-- A real model task through the connected CLI, its image capabilities and the full production video pipeline remain unverified. Model labels in the Client UI are not assumed to be CLI identifiers; choose the desired model in the existing CLI.
+- Production reference-analysis tasks and the full video pipeline remain unverified; the later synthetic vision check is recorded below. Model labels in the Client UI are not assumed to be CLI identifiers; choose the desired model in the existing CLI.
 
 ## Load failed diagnosis and Chrome cookies
 
@@ -52,3 +52,12 @@ Apple Developer signing/notarization; test external binaries and Unity licensing
 - Real yt-dlp metadata-only check of the user's consented video completed with exit code 0 using `--cookies-from-browser chrome`; its expected YouTube ID was returned, with no stderr error. Cookie values were not printed or exported. This did not download the full reference audio.
 - The full automated suite now has **60 passing tests**, including CORS for validation/auth/unhandled errors, persisted preflight errors, rejected cookie option/path injection, consent ordering, explicit yt-dlp flags, and output redaction. Frontend compilation passed.
 - In the rebuilt native app, Chrome cookies were enabled and saved through Settings. The existing Client pane was reconnected; repeating Start on the same episode visibly displayed the image-capability explanation instead of `Load failed`. The `Start blocked` log was confirmed in the real SQLite database. The vision assertion was deliberately left false, and production/model tasks were not started.
+
+## Image-capability configuration resolved
+
+- Sent one actual capability-check task through the existing Client-launched Herdr pane. It used a synthetic PNG only, not the user's reference images. The CLI identified itself as Gemini 4 Argon (Medium), viewed the PNG with `read_file`, and saved a JSON result.
+- Independently viewed the same PNG and confirmed that the six-character code and left/right shapes matched the CLI result exactly. The image-capability requirement is therefore satisfied for this current model/CLI.
+- The test exposed a short `blocked` permission phase that the adapter treated as an immediate failure even though the CLI subsequently completed. The adapter now waits for the user/provider to resolve blocked state without approving dialogs; the task completes only after the expected JSON and completed turn.
+- Herdr Core 0.1.18 retains `done` after a turn and rejects `--if idle` in that state. Completed-state readiness is now accepted; normal Core send retains its blocked-dialog rejection. Actual empty-input checks confirmed the mismatch and supported default-send behavior without submitting another model task.
+- In the rebuilt `.app`, enabled and saved `vision_enabled=true`, left Chrome cookies enabled, and reconnected the same Client pane to visible Ready. Read-only SQLite inspection confirmed both saved booleans. Production was not started during this settings fix.
+- **62 tests pass**, including waiting through a permission pause with no injected approval and accepting the next task from a completed CLI state. Release `.app` build passed.

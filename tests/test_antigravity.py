@@ -22,7 +22,8 @@ class ClientFixture(AntigravitySession):
         if args[0]=='ls': return {'terminals':[{'address':'t7'}]}
         if args[0]=='get': return json.loads(json.dumps(self.terminal))
         if args[0]=='send':
-            assert args[-3:]==('--if','idle','--json')
+            assert args[-3:]==('--if','idle','--json') or (args[-1]=='--json' and self.terminal['status']['state']=='done')
+            assert '--force' not in args
             self.sent.set();self.terminal['status']['state']='working'
             if self.complete:
                 self.active_sends+=1;self.peak=max(self.peak,self.active_sends)
@@ -156,3 +157,27 @@ def test_client_api_requires_origin_confirmation_and_never_executes_gemini(tmp_p
         assert client.post('/diagnostics/gemini').json()['ok'] is True
         assert client.post('/antigravity/unbind').status_code==200
         assert client.get('/antigravity/status').json()['bound_target'] is None
+
+async def test_permission_pause_waits_for_user_without_failing_or_approving(tmp_path):
+    session=ClientFixture(tmp_path);await session.bind('t7',True);session.complete=False
+    states=[];adapter=AntigravityAdapter(session,on_state=states.append)
+    task=asyncio.create_task(adapter.launch(tmp_path,'Task','permission.json',lambda _:None,timeout=3))
+    await session.sent.wait();session.terminal['status']['state']='blocked'
+    await asyncio.sleep(.6)
+    assert not task.done()
+    assert 'blocked' in states
+    assert not any(c[0] in ('keys','interrupt','kill','run') for c in session.calls)
+    # Simulate the user resolving the CLI's permission dialog and the agent finishing its own work.
+    (tmp_path/'permission.json').write_text('{"complete":true}')
+    session.terminal['turn']+=1;session.terminal['status']['state']='done'
+    assert await task=={'complete':True}
+    assert 'done' in states
+
+async def test_completed_cli_can_accept_next_task_without_forcing_a_dialog(tmp_path):
+    session=ClientFixture(tmp_path);session.terminal['status']['state']='done';session.terminal['turn']=4
+    await session.bind('t7',True)
+    value=await AntigravityAdapter(session).launch(tmp_path,'Next task','after-done.json',lambda _:None)
+    assert value['brief']=='A quiet atmosphere'
+    sends=[c for c in session.calls if c[0]=='send']
+    assert len(sends)==1 and '--force' not in sends[0]
+    assert '--if' not in sends[0]  # Core supports no --if done flag.

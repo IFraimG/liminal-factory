@@ -58,3 +58,9 @@ Appearance is dark; per-episode output defaults are exposed in New Episode rathe
 - [x] Outermost CORS, readable errors, persisted start rejection, no blind retry
 - [x] Consent-bound Chrome cookie/profile configuration with redacted downloader logs
 - [x] Real Chrome-cookie yt-dlp metadata check (exit 0), 60 tests and frontend build
+
+## Verified image support
+- [x] Real synthetic-image challenge via current Gemini 4 Argon (Medium) and `read_file`
+- [x] Independent visual verification of code and shapes; no user reference images used
+- [x] Saved vision enabled, Chrome cookies preserved, Client Ready restored
+- [x] Wait through blocked permission state; support Core's done state; 62 passing tests

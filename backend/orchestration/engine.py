@@ -129,6 +129,7 @@ class Engine:
                 self.store.log(e,n,'Waiting for Antigravity Client → CLI → your confirmed idle Herdr pane. No direct Gemini/agy launch.')
             adapter.on_wait=waiting
             adapter.on_ready=lambda:self.store.update(e,n,'Running')
+            adapter.on_state=lambda state:self.store.log(e,n,'Client CLI is waiting for your permission/auth response in Herdr; no dialog is auto-approved.' if state=='blocked' else 'Client CLI state: '+state)
         feedback=self.store.task(e,n)['data'].get('feedback','')
         if feedback: prompt+='\nUser requested changes (creative guidance only): '+feedback
         try:
