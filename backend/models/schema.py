@@ -26,7 +26,7 @@ class EpisodeInput(BaseModel):
     channel_url: str
     start_seconds: float=Field(default=0,ge=0,le=86400)
     analysis_minutes: float=Field(default=5,gt=0,le=30)
-    permission: bool=False
+    permission: bool=True
     duration_minutes: float=Field(default=60,gt=0,le=180)
     recording_minutes: float|None=Field(default=None,gt=0,le=180)
     channel_review_enabled: bool=True

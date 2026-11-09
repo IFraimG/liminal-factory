@@ -14,7 +14,7 @@ import {EpisodeIntentFields} from './components/EpisodeIntentFields';
 import {ExtendedRelease} from './components/ExtendedRelease';
 import {FinalReview} from './components/FinalReview';
 const pretty=(s:string)=>s.replaceAll('_',' ').replace(/\b\w/g,c=>c.toUpperCase());
-const initial:Config={name:'Untitled atmosphere',audio_url:'',channel_url:'',start_seconds:0,analysis_minutes:5,permission:false,duration_minutes:60,resolution:'1080p',image_resolution:'1920x1080',agent_guidance:'',fps:24,audio_mode:'Seamless Loop',loop_seconds:12,style:'Liminal Space',output_directory:''};
+const initial:Config={name:'Untitled atmosphere',audio_url:'',channel_url:'',start_seconds:0,analysis_minutes:5,permission:true,duration_minutes:60,resolution:'1080p',image_resolution:'1920x1080',agent_guidance:'',fps:24,audio_mode:'Seamless Loop',loop_seconds:12,style:'Liminal Space',output_directory:''};
 const tools=['herdr','hc','codex','agy','ffmpeg','ffprobe','yt-dlp','unity'];
 function Badge({status}:{status:string}){return <span className={'badge '+status.toLowerCase().replaceAll(' ','-')}>{status==='Running'&&<span className="live"/>}{status}</span>}
 function Field({label,children,hint}:{label:string;children:React.ReactNode;hint?:string}){return <label className="field"><span>{label}</span>{children}{hint&&<small>{hint}</small>}</label>}
