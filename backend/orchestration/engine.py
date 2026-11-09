@@ -17,6 +17,7 @@ from backend.agents.providers import REFERENCE_POLICY
 from backend.agents.context import episode_context
 from backend.audio.reference import analyze
 from backend.audio.engineer import process_audio
+from backend.audio.settings import extension_settings
 from backend.media.ffmpeg import assemble
 
 from backend.orchestration.priorities import PROVIDERS,LOCAL_TASKS,ACTIVE_STATUSES,validate_order,order_for
@@ -140,7 +141,6 @@ class Engine:
                     key=(e,n); t=self.store.task(e,n)
                     if key in self.running or t['status']!='Pending': continue
                     if not all(self.store.task(e,d)['status'] in SUCCESS for d in deps): continue
-                    if n=='audio_engineer' and self.store.config(e).get('postproduction_enabled') and (not self.store.config(e).get('presentation_minutes') or self.store.task(e,'visual_choice')['status']!='Approved'):continue
                     if n=='recording_setup' and not self.store.config(e).get('recording_minutes'): continue
                     if n in GATES:
                         self.store.update(e,n,'Waiting for Approval'); self.store.log(e,n,'User approval required'); continue
@@ -162,6 +162,8 @@ class Engine:
                 preparation=None
                 if n in LOCAL_TASKS and n not in self.handlers:
                     c=self.store.config(e)
+                    if n=='audio_engineer':
+                        minutes,mode=extension_settings(c);c={**c,'duration_minutes':minutes,'audio_mode':mode}
                     preparation=await self.ask(e,n,'Prepare a brief execution/check plan for the local pipeline step '+n+'. The task field MUST equal '+json.dumps(n)+' exactly; it is an identifier, not a description. Episode parameters: '+json.dumps({key:c.get(key) for key in ('style','duration_minutes','recording_minutes','resolution','fps','audio_mode')})+'. The application runs the fixed local tools after your response. Do not execute tools, download, render, launch agents, alter files other than the required JSON, change settings or approve anything. Propose checks without claiming they already passed or that you inspected audio/images.',step_preparation_schema(n))
                     if preparation['result']['task']!=n:raise ValueError('Agent preparation references another step')
                 data=await self.dispatch_with_budget(e,n)
@@ -319,7 +321,8 @@ class Engine:
             return result
         if n=='audio_engineer':
             data=self.verify_approval(e,'music_approval'); paths=[contained(root,p) for p in data['music']]
-            await process_audio(paths,root/'final.wav',c['duration_minutes']*60,c['audio_mode'],self.tool('ffmpeg'),self.tool('ffprobe'),gain_db=c.get('audio_gain_db',0),fade_seconds=c.get('audio_fade_seconds',0))
+            minutes,mode=extension_settings(c)
+            await process_audio(paths,root/'final.wav',minutes*60,mode,self.tool('ffmpeg'),self.tool('ffprobe'),gain_db=c.get('audio_gain_db',0),fade_seconds=c.get('audio_fade_seconds',0))
             return {'artifacts':['final.wav','final.report.json']}
         if n=='unity_preview':
             checkpoint=self.store.task(e,n)['data'].get('preview_checkpoint')
@@ -370,15 +373,15 @@ class Engine:
     async def set_recording_duration(self,e,minutes):
         if not isinstance(minutes,(int,float)) or isinstance(minutes,bool) or not 0<minutes<=180:raise ValueError('Enter a duration above 0 and at most 180 minutes')
         config=self.store.config(e)
-        if any(key[0]==e for key in self.running):raise ValueError('Wait for active episode tasks before changing recording duration')
-        version=Versions(self.store,self.root).archive(e,{'recording_setup','visual_render','audio_engineer','final_assembly'})
+        affected={'recording_setup','visual_render','final_assembly'}
+        affected.update({'visual_choice','image_edit','image_approval','visual_extend'} if config.get('postproduction_enabled') else {'audio_engineer'})
+        if any(key[0]==e and (not config.get('postproduction_enabled') or key[1] in affected) for key in self.running):raise ValueError('Wait for active affected recording tasks before changing recording duration')
+        version=Versions(self.store,self.root).archive(e,affected)
         if version:
             Versions(self.store,self.root).insert(version);self.store.db.commit()
         config['recording_minutes']=minutes
         if not config.get('postproduction_enabled'):config['duration_minutes']=minutes
         self.store.execute('UPDATE episodes SET config=? WHERE id=?',(json.dumps(config),e))
-        affected={'recording_setup','visual_render','final_assembly'}
-        affected.update({'visual_choice','image_edit','image_approval','visual_extend'} if config.get('postproduction_enabled') else {'audio_engineer'})
         for name in affected:
             self.store.execute('INSERT OR IGNORE INTO tasks(episode,name) VALUES(?,?)',(e,name))
             self.store.update(e,name,'Pending',error='',data={})

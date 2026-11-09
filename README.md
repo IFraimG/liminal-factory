@@ -14,7 +14,7 @@
 | Экспорт | WAV заданной длительности; H.264/AAC MP4 с проверками FFprobe и контрольным декодированием |
 | Упаковка | Tauri `.app` со встроенным Python sidecar; конфигурация `.dmg` |
 
-Проверены запуск `.app` на Apple Silicon, создание эпизода через GUI, восстановление после перезапуска, 206 Python-тестов и 30 тестов интерфейса, WAV ровно на 3600 секунд и завершённый эпизод с Unity-записью на 180 секунд. Правки финала и сохранение нескольких версий проверены на отдельном тестовом эпизоде; реальный GPT-6.1 Sol Medium вернул валидный план правки. Результаты и ограничения перечислены в [VERIFICATION.md](VERIFICATION.md), план — в [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
+Проверены запуск `.app` на Apple Silicon, создание эпизода через GUI, восстановление после перезапуска, 210 Python-тестов и 31 тест интерфейса, WAV ровно на 3600 секунд и завершённый эпизод с Unity-записью на 180 секунд. Правки финала и сохранение нескольких версий проверены на отдельном тестовом эпизоде; реальный GPT-6.1 Sol Medium вернул валидный план правки. Результаты и ограничения перечислены в [VERIFICATION.md](VERIFICATION.md), план — в [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
 
 ## Требования
 
@@ -536,3 +536,12 @@ In **New Episode → Output settings**, select **Video resolution** and **Genera
 Use **Additional direction for AI agents** for lighting, materials, composition, music, atmosphere and other episode-wide preferences (up to 8000 characters). The text is saved as `agent_guidance` with the episode, displayed on its details page, and included in every model request: original creative tasks, local-step preparation, image edits, retries/fallbacks and revision planning/clarification rounds. Later explicit corrections take precedence only where they conflict within the requested scope; the remaining initial direction stays in effect. Output validation, human approvals and supported tool capabilities remain enforced.
 
 Existing episodes without these fields continue to work and their saved output/approvals are not changed by this update. These initial settings apply to newly created episodes; later scoped creative adjustments use the existing revision controls.
+
+
+### Audio starts immediately after music approval
+
+**Audio Engineer** becomes eligible as soon as **Music Approval** is approved, using the current release duration (60 minutes by default or the episode's selected value). It does not wait for Unity recording, Visual Choice or an image approval. Extended episodes use Variational Extend from this first run, consistently with the later extended-release step; legacy episodes retain their chosen processing mode.
+
+Choosing a visual source at the same duration preserves a running or completed audio task. Changing release duration still requires stopping affected active output tasks and rebuilding audio to the new length. The release form starts with the existing target for extended episodes so a custom initial duration is retained.
+
+Saving Unity capture minutes also leaves independent audio running; it resets only recording/visual consumers and preserves release duration and creative approvals. Agent preparation requests can queue when they share one CLI session, and CLI permission pauses still require the user. Once prepared, local audio processing and Unity work can overlap within the configured concurrency limit.

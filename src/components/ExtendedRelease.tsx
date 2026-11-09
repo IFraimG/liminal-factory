@@ -2,7 +2,7 @@ import React,{useState} from 'react';
 import {api,media} from '../stores/api';
 import type {Detail} from '../types';
 export function ExtendedRelease({detail,onRefresh}:{detail:Detail;onRefresh:()=>Promise<void>}){
- const [minutes,setMinutes]=useState(String(detail.config.presentation_minutes||60)),[mode,setMode]=useState(detail.config.presentation_mode||'video'),[prompt,setPrompt]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('');
+ const [minutes,setMinutes]=useState(String(detail.config.presentation_minutes||(detail.config.postproduction_enabled?detail.config.duration_minutes:60)||60)),[mode,setMode]=useState(detail.config.presentation_mode||'video'),[prompt,setPrompt]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('');
  const capture=detail.tasks.find(t=>t.name==='visual_render'),edit=detail.tasks.find(t=>t.name==='image_edit'),approval=detail.tasks.find(t=>t.name==='image_approval');
  if(capture?.status!=='Completed')return null;
  const active=detail.tasks.some(t=>['image_edit','visual_extend','final_assembly'].includes(t.name)&&['Running','Waiting for quota','Waiting for CLI','Waiting for Client','Waiting for Permission'].includes(t.status));
