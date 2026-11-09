@@ -167,6 +167,11 @@ async def detail(e:str):
         if contained(root,path).is_file(): refs.append(path)
     return {'id':e,'config':config,'tasks':tasks,'logs':store.rows('SELECT * FROM logs WHERE episode=? ORDER BY id DESC LIMIT 300',(e,)),'artifacts':artifacts,'references':refs,'music':[str(p.relative_to(root)) for p in sorted((root/'music').glob('*'))],'workflow':engine.workflow(e), 'presentation':engine.presentation.state(e),'channel_review':engine.channel_review.state(e),'versions':Versions(store,engine.root).list(e),'revisions':engine.revisions.rows(e),'final_current':store.task(e,'final_assembly')['status']=='Completed'}
 
+@app.get('/episodes/{e}/history')
+async def episode_history(e:str):
+    store.config(e)
+    return {'logs':store.rows('SELECT * FROM logs WHERE episode=? ORDER BY id DESC',(e,))}
+
 @app.post('/episodes/{e}/revisions')
 async def request_revision(e:str,request:RevisionInput):return {'id':engine.revisions.create(e,request)}
 
