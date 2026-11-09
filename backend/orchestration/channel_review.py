@@ -91,33 +91,52 @@ class ChannelReview:
                     ('Return the EXACT original title, character for character; do not invent or rewrite any title.' if request['action']=='search' else 'The user explicitly requests a corrected/adapted title. Keep its source video_id and satisfy their correction; its original title will be shown separately.')+
                     ' Explain each atmosphere match. Generate relevant YouTube hashtags as ONE comma-space-separated line like #ambient, #darkambient, #coldcore; no whitespace inside each tag, no duplicates. These are recommendations, not claims that tags were extracted from the source or guarantee performance. Include a suitable description. Later user requirements override conflicting earlier ones; retain unaffected requirements. Conversation requirements, oldest first: '+json.dumps(history,ensure_ascii=False))
             result=await engine.ask(e,'metadata',prompt,ChannelMetadataPlan,output_name=directory+'/plan-'+uuid.uuid4().hex+'.json')
-            plan=result['result'];lookup={v['video_id']:v for v in videos};candidates=[]
-            fields=task['data'].get('revision_fields',[])
-            if fields and previous and not {'titles','recommended'}&set(fields):
-                candidates=previous['data']['candidates']
-            else:
-                for candidate in plan['candidates']:
-                    source=lookup.get(candidate['video_id'])
-                    if not source:raise ValueError('Agent selected a video outside the verified channel candidate set')
-                    if request['action']=='search' and candidate['title']!=source['title']:raise ValueError('Search must return an existing channel title exactly; use Refine to adapt it')
-                    candidates.append({**candidate,'original_title':source['title'],'source_url':source['url'],'adapted':candidate['title']!=source['title']})
-            data={'candidates':candidates,'hashtags':plan['hashtags'],'description':plan['description'],'channel_url':config['channel_url'],'files':[str(records.relative_to(root)),*result['artifacts']]}
-            canonical=root/'metadata.json'
-            if canonical.is_file() and 'description' not in fields:
-                existing=json.loads(canonical.read_text())
-                if isinstance(existing.get('description'),str):data['description']=existing['description']
-            if fields and previous:
-                for field in ('hashtags','description'):
-                    if field not in fields:data[field]=previous['data'][field]
-            candidate_file=folder/'candidates.json';candidate_file.write_text(json.dumps(data,ensure_ascii=False,indent=2));data['files'].append(str(candidate_file.relative_to(root)))
-            selected=previous['data'].get('selected_video_id') if fields and previous and not {'titles','recommended'}&set(fields) else None
-            if selected not in {c['video_id'] for c in candidates}:selected=candidates[0]['video_id']
-            if fields:data['selected_video_id']=selected
-            data['file_checksums']={name:checksum(contained(root,name)) for name in data['files']}
-            self.write_metadata(e,data,selected);self.update(identifier,'Ready',data)
-            return {'artifacts':['metadata.json',*data['files']],'result':json.loads((root/'metadata.json').read_text()),'channel_round_id':identifier}
+            return self.finish(e,identifier,request,previous,task,videos,result,records,folder)
         except asyncio.CancelledError:self.update(identifier,'Cancelled',error='Search cancelled; previous rounds remain available.');raise
         except Exception as exc:self.update(identifier,'Failed',error=str(exc));raise
+    def finish(self,e,identifier,request,previous,task,videos,result,records,folder):
+        root=self.engine.directory(e);config=self.engine.store.config(e)
+        plan=result['result'];lookup={v['video_id']:v for v in videos};candidates=[]
+        fields=task['data'].get('revision_fields',[])
+        if fields and previous and not {'titles','recommended'}&set(fields):
+            candidates=previous['data']['candidates']
+        else:
+            for candidate in plan['candidates']:
+                source=lookup.get(candidate['video_id'])
+                if not source:raise ValueError('Agent selected a video outside the verified channel candidate set')
+                if request['action']=='search' and candidate['title']!=source['title']:raise ValueError('Search must return an existing channel title exactly; use Refine to adapt it')
+                candidates.append({**candidate,'original_title':source['title'],'source_url':source['url'],'adapted':candidate['title']!=source['title']})
+        data={'candidates':candidates,'hashtags':plan['hashtags'],'description':plan['description'],'channel_url':config['channel_url'],'files':[str(records.relative_to(root)),*result['artifacts']]}
+        canonical=root/'metadata.json'
+        if canonical.is_file() and 'description' not in fields:
+            existing=json.loads(canonical.read_text())
+            if isinstance(existing.get('description'),str):data['description']=existing['description']
+        if fields and previous:
+            for field in ('hashtags','description'):
+                if field not in fields:data[field]=previous['data'][field]
+        candidate_file=folder/'candidates.json';candidate_file.write_text(json.dumps(data,ensure_ascii=False,indent=2));data['files'].append(str(candidate_file.relative_to(root)))
+        selected=previous['data'].get('selected_video_id') if fields and previous and not {'titles','recommended'}&set(fields) else None
+        if selected not in {c['video_id'] for c in candidates}:selected=candidates[0]['video_id']
+        if fields:data['selected_video_id']=selected
+        data['file_checksums']={name:checksum(contained(root,name)) for name in data['files']}
+        self.write_metadata(e,data,selected);self.update(identifier,'Ready',data)
+        return {'artifacts':['metadata.json',*data['files']],'result':json.loads((root/'metadata.json').read_text()),'channel_round_id':identifier}
+    async def recover(self,e,path):
+        engine=self.engine;store=engine.store;task=store.task(e,'metadata');identifier=task['data'].get('channel_round_id')
+        if not identifier:raise ValueError('No channel review round belongs to this saved result')
+        row=self.row(e,identifier);request=row['request'];root=engine.directory(e);folder=contained(root,'channel-review/'+identifier);records=folder/'source-videos.json'
+        videos=json.loads(records.read_text())['videos'];config=store.config(e)
+        verified=await channel_videos(config['channel_url'],engine.tool('yt-dlp'),store,engine.settings.cache_hours,engine.settings.yt_dlp_use_chrome_cookies,engine.settings.yt_dlp_chrome_profile)
+        lookup={v['video_id']:v for v in verified}
+        if not videos or any(lookup.get(v['video_id'])!=v for v in videos):raise ValueError('Saved source pool no longer matches verified channel videos')
+        current=store.task(e,'metadata')
+        if current['status']!='Failed' or current['data']!=task['data'] or (e,'metadata') in engine.running:raise ValueError('Task changed during recovery; reload its state')
+        plan=ChannelMetadataPlan.model_validate_json(path.read_text()).model_dump()
+        previous=self.row(e,request['expected_round_id']) if request.get('expected_round_id') else None
+        result={'result':plan,'artifacts':[str(path.relative_to(root))]}
+        output=self.finish(e,identifier,request,previous,task,videos,result,records,folder)
+        store.update(e,'metadata','Completed',error='',data={**task['data'],**output,'artifact_checksums':{p:checksum(contained(root,p)) for p in output['artifacts']},'recovered_from':str(path.relative_to(root))})
+        store.log(e,'metadata','Recovered saved channel result after original CLI, schema, input and channel-source validation. No model prompt sent.');engine.wake.set();return {'recovered':True}
     def write_metadata(self,e,data,video_id):
         selected=next(c for c in data['candidates'] if c['video_id']==video_id)
         metadata={'titles':[c['title'] for c in data['candidates']],'recommended':selected['title'],'description':data['description'],'hashtags':data['hashtags'],'source_video_id':video_id,'source_title':selected['original_title'],'source_url':selected['source_url'],'title_adapted':selected['adapted']}

@@ -401,7 +401,6 @@ class Engine:
         if identity: await self.herdr(n).cancel(identity)
         self.store.update(e,n,'Cancelled')
     async def recover_late_result(self,e,n):
-        if self.store.config(e).get('channel_review_enabled'):raise ValueError('Use Retry Task for channel title search to validate source provenance')
         if n!='metadata': raise ValueError('Saved-result recovery is supported for Metadata; multi-stage tasks require Retry.')
         task=self.store.task(e,n)
         if task['status']!='Failed' or (e,n) in self.running: raise ValueError('Only an inactive failed task can recover a saved result')
@@ -428,6 +427,7 @@ class Engine:
         current_task=self.store.task(e,n)
         if current_task['status']!='Failed' or current_task['data'].get('identity')!=identity or (e,n) in self.running:
             raise ValueError('Task changed during recovery; reload its state')
+        if self.store.config(e).get('channel_review_enabled'):return await self.channel_review.recover(e,path)
         checked=Metadata.model_validate_json(path.read_text()).model_dump()
         originals={s.casefold() for s in json.loads((root/'channel_titles.json').read_text())}
         if any(title.casefold() in originals for title in checked['titles']): raise ValueError('Generated title duplicates a channel reference')

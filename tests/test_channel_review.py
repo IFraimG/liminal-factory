@@ -151,3 +151,35 @@ async def test_title_and_hashtag_search_preserves_existing_description(setup,mon
     engine,store,e,root=setup;(root/'metadata.json').write_text(json.dumps({'description':'Keep this existing description'}))
     identifier,result,_=await round_result(engine,store,e,ChannelReviewRequest(),monkeypatch)
     assert result['result']['description']=='Keep this existing description'
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('corruption',[None,'invented_title','source_pool'])
+async def test_late_channel_result_recovery_revalidates_cli_schema_and_source_pool(setup,monkeypatch,corruption):
+    import time
+    from types import SimpleNamespace
+    engine,store,e,root=setup
+    identifier,_,_=await round_result(engine,store,e,ChannelReviewRequest(),monkeypatch)
+    candidate=engine.channel_review.row(e,identifier)['data']['candidates'][0]
+    plan={'candidates':[{k:candidate[k] for k in ('video_id','title','reason')}],'hashtags':'#ambient, #coldcore','description':'Recovered atmosphere'}
+    if corruption=='invented_title':plan['candidates'][0]['title']='Invented source title'
+    path=root/('metadata-'+'a'*32+'.json');path.write_text(json.dumps(plan))
+    identity={'agent':'agy','pane':'t7','result':path.name,'transport':'herdr-core-existing-session','created_ms':100,'pid':123,'executable':'agy','before_turn':1,'input_checksums':{}}
+    store.execute('UPDATE tasks SET started=? WHERE episode=? AND name=?',(time.time()-2,e,'metadata'))
+    store.update(e,'metadata','Failed',data={**store.task(e,'metadata')['data'],'identity':identity})
+    engine.channel_review.update(identifier,'Failed',error='Proxy disappeared')
+    if corruption=='source_pool':
+        source=root/'channel-review'/identifier/'source-videos.json';d=json.loads(source.read_text());d['videos'][0]['title']='Tampered source';source.write_text(json.dumps(d))
+    async def command(*args,**kwargs):return {'turn':2,'status':{'state':'done'}}
+    fake=SimpleNamespace(command=command,fingerprint=lambda _:dict(address='t7',created_ms=100,pid=123,executable='agy'),word=lambda _:'done')
+    monkeypatch.setattr(engine,'client_session',lambda:fake)
+    async def forbidden(*args,**kwargs):raise AssertionError('Recovery must not ask a model')
+    monkeypatch.setattr(engine,'ask',forbidden)
+    if corruption:
+        with pytest.raises(ValueError):await engine.recover_late_result(e,'metadata')
+        assert store.task(e,'metadata')['status']=='Failed'
+    else:
+        assert await engine.recover_late_result(e,'metadata')=={'recovered':True}
+        assert store.task(e,'metadata')['status']=='Completed'
+        assert engine.channel_review.row(e,identifier)['status']=='Ready'
+        assert store.task(e,'metadata_approval')['status']=='Waiting for Approval'
+        assert json.loads((root/'metadata.json').read_text())['recommended']==candidate['title']
