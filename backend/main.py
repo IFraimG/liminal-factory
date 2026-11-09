@@ -5,7 +5,7 @@ from fastapi import FastAPI,Request,HTTPException
 from fastapi.responses import FileResponse,StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
-from backend.models.schema import EpisodeInput,Settings,MusicBrief,RevisionInput
+from backend.models.schema import EpisodeInput,Settings,MusicBrief,RevisionInput,RevisionReply
 from backend.storage.db import Store
 from backend.orchestration.engine import Engine,PriorityLockedError
 from backend.orchestration.versions import Versions
@@ -173,6 +173,10 @@ async def request_revision(e:str,request:RevisionInput):return {'id':engine.revi
 @app.post('/episodes/{e}/revisions/{revision}/cancel')
 async def cancel_revision(e:str,revision:str):
     await engine.revisions.cancel(e,revision);return {'ok':True}
+
+@app.post('/episodes/{e}/revisions/{revision}/reply')
+async def reply_revision(e:str,revision:str,request:RevisionReply):
+    return {'id':await engine.revisions.reply(e,revision,request)}
 
 @app.put('/episodes/{e}/recording')
 async def recording_duration(e:str,request:Request):

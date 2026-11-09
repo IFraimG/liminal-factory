@@ -150,3 +150,76 @@ async def test_new_gate_feedback_is_not_constrained_by_an_older_narrow_edit(comp
     assert 'revision_fields' not in revised
     assert revised['revision_agent']['model']=='gpt-6.1-sol'
     assert revised['feedback']=='Move the camera farther back as well'
+
+@pytest.mark.asyncio
+async def test_clarification_replies_continue_same_revision_with_durable_ordered_history(completed,monkeypatch):
+    from backend.models.schema import RevisionReply
+    engine,store,eid,root=completed;seen=[];before={n:store.task(eid,n) for n in DAG};selected=[]
+    def question(text):return RevisionPlan(changes=[],config_updates={},explanation='Need one concrete choice before applying the edit',needs_clarification=True,clarification=text).model_dump()
+    answers=[question('Keep the existing hashtags?'),question('Which description language?'),plan('metadata')]
+    answers[-1]['changes'][0]['allowed_fields']=['description']
+    class Adapter:
+        async def launch(self,root,prompt,result,save):
+            seen.append((prompt,result));return answers.pop(0)
+        async def cancel(self,identity):return True
+    def herdr(task,provider,**kwargs):selected.append((provider,kwargs));return Adapter()
+    async def choose(*args):return 'codex'
+    monkeypatch.setattr(engine,'herdr',herdr);monkeypatch.setattr(engine.quota,'choose',choose)
+    identifier=engine.revisions.create(eid,RevisionInput(prompt='Improve only the video description'))
+    await engine.revisions.jobs[identifier]
+    assert store.task(eid,'final_assembly')==before['final_assembly']
+    first=engine.revisions.get(identifier)['data']['messages'][-1]
+    await engine.revisions.reply(eid,identifier,RevisionReply(question_id=first['id'],answer='Да'))
+    await engine.revisions.jobs[identifier]
+    assert store.task(eid,'final_assembly')==before['final_assembly']
+    second=engine.revisions.get(identifier)['data']['messages'][-1]
+    await engine.revisions.reply(eid,identifier,RevisionReply(question_id=second['id'],answer='На русском'))
+    await engine.revisions.jobs[identifier]
+    row=engine.revisions.get(identifier);messages=row['data']['messages']
+    assert row['status']=='Applied' and len(engine.revisions.rows(eid))==1
+    assert [m['role'] for m in messages]==['user','assistant','user','assistant','user','assistant']
+    assert [m['content'] for m in messages[:5]]==['Improve only the video description','Keep the existing hashtags?','Да','Which description language?','На русском']
+    assert messages[2]['reply_to']==first['id'] and messages[4]['reply_to']==second['id']
+    assert len({result for _,result in seen})==3
+    assert 'Да' in seen[-1][0] and 'На русском' in seen[-1][0] and first['content'] in seen[-1][0]
+    assert all(value==('codex',{'model':'gpt-6.1-sol','effort':'medium'}) for value in selected)
+    assert 'На русском' in store.task(eid,'metadata')['data']['feedback']
+    for n in set(DAG)-{'metadata','final_assembly'}:assert store.task(eid,n)==before[n]
+    db_path=store.rows('PRAGMA database_list')[0]['file'];reloaded=Engine(Store(Path(db_path)),engine.root,engine.settings)
+    assert reloaded.revisions.get(identifier)['data']['messages']==messages
+
+@pytest.mark.asyncio
+async def test_existing_unanswered_question_is_replyable_and_duplicate_answers_are_rejected(completed,monkeypatch):
+    from backend.models.schema import RevisionReply
+    engine,store,eid,root=completed;identifier=request_row(engine,eid)
+    p=RevisionPlan(changes=[],config_updates={},explanation='Need a clarification about the current scene',needs_clarification=True,clarification='Should the current scene composition be kept?').model_dump()
+    engine.revisions.update(identifier,'Needs clarification',data={**engine.revisions.get(identifier)['data'],'plan':p},error=p['clarification'])
+    # Simulate the real pre-upgrade row, with no conversation field at all.
+    raw=json.loads(store.rows('SELECT data FROM revisions WHERE id=?',(identifier,))[0]['data']);raw.pop('messages',None)
+    store.execute('UPDATE revisions SET data=? WHERE id=?',(json.dumps(raw),identifier))
+    legacy=engine.revisions.rows(eid)[0]['data']['messages'];assert legacy[-1]['kind']=='question'
+    async def unavailable(*args):return None
+    monkeypatch.setattr(engine.quota,'choose',unavailable)
+    reply=RevisionReply(question_id=legacy[-1]['id'],answer='Да')
+    try:
+        results=await asyncio.gather(engine.revisions.reply(eid,identifier,reply),engine.revisions.reply(eid,identifier,reply),return_exceptions=True)
+        assert sum(isinstance(result,ValueError) for result in results)==1
+        messages=engine.revisions.get(identifier)['data']['messages']
+        assert messages[:2]==legacy and len(messages)==3 and messages[-1]['content']=='Да'
+        assert store.task(eid,'final_assembly')['status']=='Completed'
+        with pytest.raises(ValueError):await engine.revisions.reply('other-episode',identifier,reply)
+    finally:await engine.revisions.close()
+
+@pytest.mark.asyncio
+async def test_stale_question_or_changed_video_cannot_resume_an_old_revision(completed):
+    from backend.models.schema import RevisionReply
+    engine,store,eid,root=completed;identifier=request_row(engine,eid)
+    engine.revisions.update(identifier,'Needs clarification',data={**engine.revisions.get(identifier)['data'],'messages':[{'id':'q1','role':'assistant','kind':'question','content':'Which camera?','created':time.time()}]})
+    with pytest.raises(ValueError,match='answered or changed'):
+        await engine.revisions.reply(eid,identifier,RevisionReply(question_id='old-question',answer='Да'))
+    (root/'output/final.mp4').write_bytes(b'externally replaced video')
+    with pytest.raises(ValueError,match='final changed'):
+        await engine.revisions.reply(eid,identifier,RevisionReply(question_id='q1',answer='Да'))
+    assert len(engine.revisions.get(identifier)['data']['messages'])==1
+    for answer in ('','   ','x'*8001):
+        with pytest.raises(ValueError):RevisionReply(question_id='q1',answer=answer)

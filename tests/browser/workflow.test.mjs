@@ -93,3 +93,33 @@ test('ongoing revision locks duplicate submission and can be cancelled',async()=
   assert.deepEqual(calls,[['/episodes/episode-a/revisions/r1/cancel','POST']]);
  }finally{await view.close()}
 });
+
+const clarificationRow={id:'r-question',provider:'codex',status:'Needs clarification',prompt:'Make the scene more realistic',error:'May the composition change?',data:{plan:{explanation:'Need your choice first',needs_clarification:true,clarification:'May the composition change?'},messages:[{id:'original',role:'user',content:'Make the scene more realistic',created:100},{id:'question-1',role:'assistant',kind:'question',content:'May the composition change?',created:101}]}};
+async function answerText(text){const input=document.querySelector('[aria-label="Your answer to the agent"]');await act(()=>{Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set.call(input,text);input.dispatchEvent(new window.Event('input',{bubbles:true}));});}
+test('answer continues the same revision and keeps both rounds visible after refresh',async()=>{
+ const calls=[];globalThis.workflowApi=async(...args)=>{calls.push(args);return {id:'r-question'}};
+ let detail={...finalDetail,revisions:[clarificationRow]},view;
+ async function refresh(){detail={...detail,revisions:[{...clarificationRow,data:{...clarificationRow.data,messages:[...clarificationRow.data.messages,{id:'answer-1',role:'user',content:'Да, сохраните музыку',created:102,reply_to:'question-1'},{id:'question-2',role:'assistant',kind:'question',content:'Keep the current camera?',created:103}]}}]};await view.root.render(React.createElement(FinalReview,{detail,onRefresh:refresh}));}
+ view=await mount(React.createElement(FinalReview,{detail,onRefresh:refresh}));
+ try{
+  assert.match(document.querySelector('[role=log]').textContent,/May the composition change/);
+  await answerText('Да, сохраните музыку');await act(()=>document.querySelector('.revision-reply').dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true})));
+  assert.deepEqual(calls,[['/episodes/episode-a/revisions/r-question/reply','POST',{question_id:'question-1',answer:'Да, сохраните музыку'}]]);
+  const history=document.querySelector('[role=log]').textContent;
+  for(const text of ['Make the scene more realistic','May the composition change?','Да, сохраните музыку','Keep the current camera?'])assert(history.includes(text));
+  assert.equal(document.querySelector('[aria-label="Your answer to the agent"]').value,'');
+ }finally{await view.close()}
+});
+test('failed reply preserves the draft and displays the rejection',async()=>{
+ globalThis.workflowApi=async()=>{throw Error('This question has already been answered; refresh')};
+ const view=await mount(React.createElement(FinalReview,{detail:{...finalDetail,revisions:[clarificationRow]},onRefresh:async()=>{}}));
+ try{
+  await answerText('Нет');await act(()=>document.querySelector('.revision-reply').dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true})));
+  assert.equal(document.querySelector('[aria-label="Your answer to the agent"]').value,'Нет');
+  assert.match(document.querySelector('[role=alert]').textContent,/already been answered/);
+ }finally{await view.close()}
+});
+test('conversation stays visible without an answer form while the agent is running',async()=>{
+ const view=await mount(React.createElement(FinalReview,{detail:{...finalDetail,revisions:[{...clarificationRow,status:'Planning'}]},onRefresh:async()=>{}}));
+ try{assert(document.querySelector('[role=log]'));assert.equal(document.querySelector('.revision-reply'),null);assert(button('Request revision').disabled)}finally{await view.close()}
+});

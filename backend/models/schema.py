@@ -215,3 +215,14 @@ class RevisionInput(BaseModel):
         value=value.strip()
         if len(value)<3:raise ValueError('Describe the requested changes')
         return value
+
+class RevisionReply(BaseModel):
+    model_config={'extra':'forbid'}
+    question_id: str=Field(min_length=1,max_length=100)
+    answer: str=Field(min_length=1,max_length=8000)
+    @field_validator('answer')
+    @classmethod
+    def answer_text(cls,value):
+        value=value.strip()
+        if not value:raise ValueError('Enter an answer')
+        return value

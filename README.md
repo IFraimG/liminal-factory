@@ -14,7 +14,7 @@
 | Экспорт | WAV заданной длительности; H.264/AAC MP4 с проверками FFprobe и контрольным декодированием |
 | Упаковка | Tauri `.app` со встроенным Python sidecar; конфигурация `.dmg` |
 
-Проверены запуск `.app` на Apple Silicon, создание эпизода через GUI, восстановление после перезапуска, 188 Python-тестов и 24 теста интерфейса, WAV ровно на 3600 секунд и завершённый эпизод с Unity-записью на 180 секунд. Правки финала и сохранение нескольких версий проверены на отдельном тестовом эпизоде; реальный GPT-6.1 Sol Medium вернул валидный план правки. Результаты и ограничения перечислены в [VERIFICATION.md](VERIFICATION.md), план — в [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
+Проверены запуск `.app` на Apple Silicon, создание эпизода через GUI, восстановление после перезапуска, 192 Python-тестов и 27 тестов интерфейса, WAV ровно на 3600 секунд и завершённый эпизод с Unity-записью на 180 секунд. Правки финала и сохранение нескольких версий проверены на отдельном тестовом эпизоде; реальный GPT-6.1 Sol Medium вернул валидный план правки. Результаты и ограничения перечислены в [VERIFICATION.md](VERIFICATION.md), план — в [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
 
 ## Требования
 
@@ -490,3 +490,14 @@ Only actual dependencies restart:
 Unrelated task records, files and per-step priorities stay unchanged. A narrow edit can restrict allowed JSON fields, so changing the description preserves titles and hashtags. Unity edits are limited to the existing procedural scene parameters; unsupported meshes or effects require extending the renderer. Duration, resolution and frame-rate bounds still apply. Existing manual creative approval gates are never bypassed.
 
 The chosen revision provider is pinned for the affected work; it does not silently switch to another provider. The same 5% eligibility rule applies, including the explicit unknown-Argon policy. Unknown/low GPT quota pauses at **Waiting for quota**. Codex uses your existing account authorization and Herdr Core, with a read-only `codex exec` request and strict output schema; the app applies the validated result. No YouTube API key or new OpenAI API key is required. CLI trust/permission prompts remain for you to resolve. After an interrupted run, use Retry on the affected failed step; the revision context is retained.
+
+
+### Answering agent clarification questions
+
+When a final-video revision enters **Needs clarification**, its conversation shows the original request and the agent’s question. Under that question, enter **Your answer to the agent** and click **Send answer and continue**. Short replies such as “Да” are accepted. The application resumes the same revision with the same selected provider/model and passes the entire ordered conversation, rather than creating an unrelated request.
+
+Questions, answers, timestamps and the resulting plan stay in the revision’s conversation in SQLite and survive refresh/restart. Each new question has its own answer field. Existing unanswered questions created before this update are also available for reply; you do not need to repeat the original request. While the agent is working or waiting for quota/CLI permission, the saved conversation stays visible and further answers are disabled. The current video remains current during clarification and only affected work restarts after a valid plan.
+
+The API rejects duplicate/stale answers, answers for another episode, and replies after the underlying final changed. A rejected reply keeps your draft in the form. Conversation history is never silently truncated. A clarification answer is creative guidance; it does not approve a scene, dismiss CLI security dialogs or add rendering capabilities that have not been implemented. The planner is instructed to explain unsupported features rather than repeatedly request permission to implement code it cannot change.
+
+API: `POST /episodes/{episode}/revisions/{revision}/reply` with `{"question_id":"<latest question id>","answer":"<your answer>"}`. Episode detail includes ordered `revisions[].data.messages`, with message IDs, role, content, timestamps and the answer’s `reply_to` question ID.

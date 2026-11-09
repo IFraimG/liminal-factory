@@ -4,5 +4,6 @@ export interface Episode {id:string;config:Config;created:number;status:string;p
 export interface Detail {final_current:boolean;revisions:Revision[];versions:Version[];workflow:Record<string,string[]>;id:string;config:Config;tasks:Task[];logs:{id:number;task:string;message:string;created:number}[];artifacts:{name:string;size:number;modified?:number}[];references:string[];music:string[]}
 export interface Settings {working_directory:string;max_concurrent_agents:number;agent_kind:string;antigravity_port:number;antigravity_wait_seconds:number;model:string;vision_enabled:boolean;yt_dlp_use_chrome_cookies:boolean;yt_dlp_chrome_profile:string;appearance:string;cache_hours:number;tools:Record<string,string>;agent_models:Record<string,string>}
 
-export interface Revision {id:string;status:string;prompt:string;provider:string;model:string|null;effort:string|null;error:string;data:{affected?:string[];plan?:{explanation:string};[key:string]:unknown}}
+export interface RevisionMessage {id:string;role:'user'|'assistant';content:string;created:number;kind?:'question'|'plan';reply_to?:string}
+export interface Revision {id:string;status:string;prompt:string;provider:string;model:string|null;effort:string|null;error:string;data:{affected?:string[];messages?:RevisionMessage[];plan?:{explanation:string;clarification?:string;needs_clarification?:boolean};[key:string]:unknown}}
 export interface Version {id:string;created:number;status:string;video:string;manifest_path:string;integrity_warnings:string[]}
