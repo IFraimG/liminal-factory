@@ -9,8 +9,8 @@ import {JSDOM} from 'jsdom';
 const bootstrapDom=new JSDOM('<div></div>');globalThis.window=bootstrapDom.window;globalThis.document=bootstrapDom.window.document;globalThis.navigator=bootstrapDom.window.navigator;
 const {createRoot}=await import('react-dom/client');
 await fs.mkdir('work',{recursive:true});
-await build({stdin:{contents:"export {PipelineGraph,graphLayout} from './src/components/PipelineGraph'; export {AgentPriorityEditor} from './src/components/AgentPriorityEditor'; export {FinalReview} from './src/components/FinalReview'; export {ExtendedRelease} from './src/components/ExtendedRelease';",resolveDir:process.cwd(),loader:'tsx'},bundle:true,platform:'node',format:'esm',outfile:'work/workflow-test-components.mjs',external:['react','react-dom/client','lucide-react'],plugins:[{name:'test-api',setup(builder){builder.onResolve({filter:/stores\/api$/},()=>({path:'test-api',namespace:'mock'}));builder.onLoad({filter:/.*/,namespace:'mock'},()=>({contents:"export async function api(...args){return globalThis.workflowApi(...args)}; export function media(e,p){return '/episodes/'+e+'/file/'+p}",loader:'js'}));}}]});
-const {PipelineGraph,graphLayout,AgentPriorityEditor,FinalReview,ExtendedRelease}=await import(path.resolve('work/workflow-test-components.mjs'));
+await build({stdin:{contents:"export {PipelineGraph,graphLayout} from './src/components/PipelineGraph'; export {AgentPriorityEditor} from './src/components/AgentPriorityEditor'; export {FinalReview} from './src/components/FinalReview'; export {ExtendedRelease} from './src/components/ExtendedRelease'; export {EpisodeIntentFields} from './src/components/EpisodeIntentFields';",resolveDir:process.cwd(),loader:'tsx'},bundle:true,platform:'node',format:'esm',outfile:'work/workflow-test-components.mjs',external:['react','react-dom/client','lucide-react'],plugins:[{name:'test-api',setup(builder){builder.onResolve({filter:/stores\/api$/},()=>({path:'test-api',namespace:'mock'}));builder.onLoad({filter:/.*/,namespace:'mock'},()=>({contents:"export async function api(...args){return globalThis.workflowApi(...args)}; export function media(e,p){return '/episodes/'+e+'/file/'+p}",loader:'js'}));}}]});
+const {PipelineGraph,graphLayout,AgentPriorityEditor,FinalReview,ExtendedRelease,EpisodeIntentFields}=await import(path.resolve('work/workflow-test-components.mjs'));
 const workflow={audio_reference:[],music_brief:['audio_reference'],music_approval:['music_brief'],audio_engineer:['music_approval'],visual_reference:[],unity_preview:['visual_reference'],visual_approval:['unity_preview'],recording_setup:['visual_approval'],visual_render:['recording_setup'],channel_reference:[],metadata:['channel_reference','music_brief','visual_reference'],final_assembly:['audio_engineer','visual_render','metadata']};
 const defaults={status:'Pending',data:{},agent_priorities:['codex','antigravity','kimi'],execution_kind:'agent',priority_locked:false};
 async function mount(component){
@@ -145,5 +145,19 @@ test('image path requests an edit and shows approval and iteration history',asyn
   assert.equal(button('Approve image and extend video').disabled,false);
   await act(()=>button('Approve image and extend video').click());
   assert.deepEqual(calls,[['/episodes/episode-a/tasks/image_approval/approve','POST']]);
+ }finally{await view.close()}
+});
+
+test('initial settings show explicit photo/video pixels and save free-form episode direction',async()=>{
+ const updates=[];
+ function Form(){const [config,setConfig]=React.useState({resolution:'1080p',image_resolution:'1920x1080',agent_guidance:''});return React.createElement(EpisodeIntentFields,{config,onChange:(key,value)=>{updates.push([key,value]);setConfig(old=>({...old,[key]:value}))}})}
+ const view=await mount(React.createElement(Form));
+ try{
+  for(const label of ['Video resolution','Generated image resolution'])assert.match(document.querySelector(`[aria-label="${label}"]`).selectedOptions[0].textContent,/1920.*1080/);
+  const text=document.querySelector('[aria-label="Additional direction for AI agents"]');
+  await act(()=>{Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set.call(text,'Keep brown materials and soft lighting');text.dispatchEvent(new window.Event('input',{bubbles:true}));});
+  assert.deepEqual(updates,[['agent_guidance','Keep brown materials and soft lighting']]);
+  const image=document.querySelector('[aria-label="Generated image resolution"]');await act(()=>{image.value='2560x1440';image.dispatchEvent(new window.Event('change',{bubbles:true}));});
+  assert.deepEqual(updates.at(-1),['image_resolution','2560x1440']);assert.match(document.body.textContent,/Later corrections/);
  }finally{await view.close()}
 });

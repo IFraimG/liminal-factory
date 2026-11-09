@@ -136,3 +136,21 @@ async def test_each_extended_export_preserves_existing_release_folder(captured,m
     assert (old/'final.mp4').read_bytes()==b'old exported video'
     new=list(export.glob('liminal-'+e+'-extended-*'));assert len(new)==2
     assert all((p/'final.mp4').read_bytes()==b'extended video' for p in new)
+
+@pytest.mark.asyncio
+async def test_generated_image_must_match_selected_pixel_dimensions(captured,monkeypatch):
+    import re
+    engine,store,e,root=captured;config=store.config(e);config.update(image_resolution='1920x1080');store.execute('UPDATE episodes SET config=? WHERE id=?',(json.dumps(config),e))
+    original='source.png';Image.fromarray(np.tile(np.arange(640,dtype=np.uint8),(360,1))).save(root/original)
+    store.execute('INSERT INTO tasks(episode,name,status,data) VALUES(?,?,?,?)',(e,'visual_choice','Approved',json.dumps({'source_image':original,'checksums':{original:checksum(root/original)}})))
+    store.execute('INSERT INTO tasks(episode,name,data) VALUES(?,?,?)',(e,'image_edit',json.dumps({'source_image':original,'feedback':'Improve texture detail'})))
+    size=[(640,360)]
+    async def ask(e,n,prompt,schema):
+        assert 'exactly 1920x1080 pixels' in prompt
+        output=re.search(r'Save the generated pixels as ([^ ]+)\.',prompt).group(1);w,h=size[0]
+        Image.fromarray(np.tile(np.arange(w,dtype=np.uint8),(h,1))[:,::-1]).save(root/output)
+        return {'result':{'image_path':output,'description':'A generated image with edited textures'},'artifacts':[]}
+    monkeypatch.setattr(engine,'ask',ask)
+    with pytest.raises(ValueError,match='resolution must be 1920x1080'):await engine.presentation.dispatch(e,'image_edit')
+    size[0]=(1920,1080);result=await engine.presentation.dispatch(e,'image_edit')
+    with Image.open(root/result['image']) as image:assert image.size==(1920,1080)

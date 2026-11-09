@@ -88,7 +88,9 @@ class Presentation:
             choice=engine.verify_approval(e,'visual_choice');data=engine.store.task(e,n)['data'];source=data.get('source_image') or choice['source_image']
             original=contained(root,source);before=checksum(original)
             output='image-edits/'+uuid.uuid4().hex+'/edited.png';contained(root,output).parent.mkdir(parents=True)
-            prompt=('Use your actual image generation/editing tool to edit '+source+' using these original reference images: references/. Save the generated pixels as '+output+'. Preserve composition and change only what the user requests. Do not replace generation with a copied image, a blank image, or a text-only description. If your current model/tools cannot generate and save an image, fail explicitly. Do not run arbitrary code, start agents, download unlicensed assets, or change the scene/project. Return the exact image_path and a truthful description. User edit: '+data.get('feedback',''))
+            dimensions=config.get('image_resolution')
+            size_instruction=(' Export the image at exactly '+dimensions+' pixels. Do not silently substitute another size.') if dimensions else ''
+            prompt=('Use your actual image generation/editing tool to edit '+source+' using these original reference images: references/. Save the generated pixels as '+output+'.'+size_instruction+' Preserve composition and change only what the user requests. Do not replace generation with a copied image, a blank image, or a text-only description. If your current model/tools cannot generate and save an image, fail explicitly. Do not run arbitrary code, start agents, download unlicensed assets, or change the scene/project. Return the exact image_path and a truthful description. User edit: '+data.get('feedback',''))
             result=await engine.ask(e,n,prompt,ImageEditResult)
             if result['result']['image_path']!=output:raise ValueError('Agent returned an unexpected image destination')
             path=contained(root,output)
@@ -97,6 +99,7 @@ class Presentation:
             with Image.open(path) as image:
                 image.load()
                 if image.format!='PNG' or min(image.size)<256:raise ValueError('Expected a generated PNG of at least 256 pixels per side')
+                if dimensions and image.size!=tuple(map(int,dimensions.split('x'))):raise ValueError('Generated image resolution must be '+dimensions+'; got '+str(image.size))
                 small=image.convert('RGB').resize((128,128));pixels=small.tobytes()
                 if max(ImageStat.Stat(small).stddev)<2:raise ValueError('Generated image appears blank')
             with Image.open(original) as image:

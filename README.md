@@ -14,7 +14,7 @@
 | Экспорт | WAV заданной длительности; H.264/AAC MP4 с проверками FFprobe и контрольным декодированием |
 | Упаковка | Tauri `.app` со встроенным Python sidecar; конфигурация `.dmg` |
 
-Проверены запуск `.app` на Apple Silicon, создание эпизода через GUI, восстановление после перезапуска, 201 Python-тест и 29 тестов интерфейса, WAV ровно на 3600 секунд и завершённый эпизод с Unity-записью на 180 секунд. Правки финала и сохранение нескольких версий проверены на отдельном тестовом эпизоде; реальный GPT-6.1 Sol Medium вернул валидный план правки. Результаты и ограничения перечислены в [VERIFICATION.md](VERIFICATION.md), план — в [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
+Проверены запуск `.app` на Apple Silicon, создание эпизода через GUI, восстановление после перезапуска, 206 Python-тестов и 30 тестов интерфейса, WAV ровно на 3600 секунд и завершённый эпизод с Unity-записью на 180 секунд. Правки финала и сохранение нескольких версий проверены на отдельном тестовом эпизоде; реальный GPT-6.1 Sol Medium вернул валидный план правки. Результаты и ограничения перечислены в [VERIFICATION.md](VERIFICATION.md), план — в [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
 
 ## Требования
 
@@ -527,3 +527,12 @@ PYTHONPATH=. .venv/bin/python scripts/verify_extended_release.py
 ```
 
 Each extended-release export uses a fresh `liminal-<episode>-extended-<id>` directory in your chosen output folder, so earlier exports are preserved even when preparing or retrying another release.
+
+
+### Initial output pixels and persistent episode direction
+
+In **New Episode → Output settings**, select **Video resolution** and **Generated image resolution** separately. Both default to **1920 × 1080**; 2560 × 1440 and 3840 × 2160 are also available. Video presets retain their existing internal identifiers (`1080p`, `1440p`, `4K`) for compatibility. Generated image pixels are saved separately as `image_resolution` and checked against the actual PNG before approval; an unexpected size fails visibly rather than silently substituting another resolution. Source/reference images are not resized by these settings.
+
+Use **Additional direction for AI agents** for lighting, materials, composition, music, atmosphere and other episode-wide preferences (up to 8000 characters). The text is saved as `agent_guidance` with the episode, displayed on its details page, and included in every model request: original creative tasks, local-step preparation, image edits, retries/fallbacks and revision planning/clarification rounds. Later explicit corrections take precedence only where they conflict within the requested scope; the remaining initial direction stays in effect. Output validation, human approvals and supported tool capabilities remain enforced.
+
+Existing episodes without these fields continue to work and their saved output/approvals are not changed by this update. These initial settings apply to newly created episodes; later scoped creative adjustments use the existing revision controls.

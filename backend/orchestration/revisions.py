@@ -7,6 +7,7 @@ from backend.orchestration.versions import Versions
 from backend.integrations.process import checksum,contained
 from backend.integrations.codex_core import CodexCoreAdapter
 from backend.agents.providers import REFERENCE_POLICY
+from backend.agents.context import episode_context
 
 SOURCES={'unity_scene':'unity_preview','visual_analysis':'visual_reference','recording':'recording_setup','music_brief':'music_brief','audio_processing':'audio_engineer','metadata':'metadata'}
 ACTIVE={'Planning','Waiting for quota','Waiting for CLI','Waiting for Permission','Applying'}
@@ -114,7 +115,7 @@ class Revisions:
                 nonlocal identity
                 identity=value;data=self.get(identifier)['data'];self.update(identifier,data={**data,'identity':value})
             config=engine.store.config(e)
-            prompt=(REFERENCE_POLICY+'\nClassify the user\'s requested corrections to a completed video. Return a minimal, bounded revision plan, not commands. Do not change files or publish anything. '
+            prompt=(REFERENCE_POLICY+episode_context(config)+'\nClassify the user\'s requested corrections to a completed video. Return a minimal, bounded revision plan, not commands. Do not change files or publish anything. '
                     'Scopes: unity_scene changes geometry, fog, materials, camera and lighting through the existing scene parameters; visual_analysis re-analyzes the original images only if explicitly requested; '
                     'recording changes resolution/FPS/duration only; music_brief changes generated music instructions and requires music import/approval; audio_processing changes mix level/fades/mode; metadata changes titles/description/hashtags only. '
                     'Use allowed_fields for narrow edits: e.g. metadata description only must allow description only; changing titles also allows recommended. Unity fields use exact scene_spec.json keys: '+', '.join(SceneSpec.model_fields)+'. An empty list allows the whole chosen scope. Never reset independent scopes just because they were earlier in the pipeline. Scene changes alone do not require re-downloading, re-analyzing music or regenerating metadata. '
