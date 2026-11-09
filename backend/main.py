@@ -195,6 +195,10 @@ async def search_channel_metadata(e:str,request:ChannelReviewRequest):
 async def approve_channel_metadata(e:str,request:ChannelTitleApproval):
     return engine.channel_review.approve(e,request)
 
+@app.post('/episodes/{e}/image-to-unity')
+async def image_to_unity(e:str):
+    await engine.presentation.send_image_to_unity(e);return {'ok':True}
+
 @app.post('/episodes/{e}/presentation')
 async def choose_presentation(e:str,request:PresentationInput):
     await engine.presentation.choose(e,request);return {'ok':True}

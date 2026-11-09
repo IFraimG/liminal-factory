@@ -133,3 +133,32 @@ async def test_matching_design_consumes_blueprint_before_render_and_blocks_wrong
     with pytest.raises(ValueError,match='does not match'):await engine.dispatch(e,'unity_preview')
     assert calls==['design','render','qa']
     assert 'unity_blueprint.json' in store.task(e,'unity_preview')['data']['preview_checkpoint']['checksums']
+
+async def test_selected_image_replans_unity_and_preserves_independent_results(tmp_path,monkeypatch):
+    from backend.orchestration.versions import Versions
+    store=Store(tmp_path/'db');engine=Engine(store,tmp_path/'episodes',Settings(vision_enabled=True))
+    e=engine.create({'name':'scene','style':'Coldcore','postproduction_enabled':True,'presentation_mode':'image','unity_planning_enabled':True});root=engine.directory(e)
+    (root/'references').mkdir();(root/'references/source.png').write_bytes(b'original');(root/'references.json').write_text('["references/source.png"]');(root/'visual_reference.json').write_text('{}')
+    image='image-edits/test/edited.png';(root/image).parent.mkdir(parents=True);(root/image).write_bytes(b'edited')
+    store.update(e,'visual_reference','Completed');store.update(e,'image_edit','Completed',data={'image':image,'artifacts':[image],'artifact_checksums':{image:checksum(root/image)}})
+    store.update(e,'image_approval','Waiting for Approval');store.update(e,'audio_engineer','Completed',data={'audio':'preserved'});store.update(e,'metadata','Completed',data={'title':'preserved'})
+    (root/'output').mkdir();(root/'output/final.mp4').write_bytes(b'previous final');store.update(e,'final_assembly','Completed',data={'artifacts':['output/final.mp4'],'artifact_checksums':{'output/final.mp4':checksum(root/'output/final.mp4')}})
+    before={n:store.task(e,n) for n in ('audio_engineer','metadata')}
+    await engine.presentation.send_image_to_unity(e)
+    assert store.config(e)['unity_reference_image']==image and (root/image).read_bytes()==b'edited'
+    assert store.task(e,'unity_blueprint')['status']=='Pending' and store.task(e,'image_approval')['status']=='Pending'
+    assert all(store.task(e,n)==t for n,t in before.items())
+    assert (root/Versions(store,engine.root).list(e)[0]['video']).read_bytes()==b'previous final'
+    async def ask(e,n,prompt,schema):
+        assert image in prompt and 'authoritative reference' in prompt and 'existing scene_spec.json' in prompt
+        result=schema.model_validate(blueprint()).model_dump();(root/'unity_blueprint.json').write_text(json.dumps(result));return {'result':result,'artifacts':['unity_blueprint.json']}
+    monkeypatch.setattr(engine,'ask',ask)
+    result=await engine.scene_planning.generate(e);assert image in result['artifacts']
+    (root/image).write_bytes(b'tampered')
+    with pytest.raises(ValueError,match='changed'):await engine.scene_planning.generate(e)
+
+async def test_image_to_unity_refuses_unvalidated_image(tmp_path):
+    store=Store(tmp_path/'db');engine=Engine(store,tmp_path/'episodes',Settings())
+    e=engine.create({'name':'scene','postproduction_enabled':True,'presentation_mode':'image'})
+    store.update(e,'image_approval','Waiting for Approval');store.update(e,'image_edit','Completed',data={'image':'image-edits/x/edited.png'})
+    with pytest.raises(ValueError,match='validated'):await engine.presentation.send_image_to_unity(e)

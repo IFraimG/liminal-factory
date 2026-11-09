@@ -77,6 +77,18 @@ class Presentation:
             store.db.commit()
         except BaseException:store.db.rollback();raise
         store.log(e,'image_edit','Image changes requested: '+prompt);engine.wake.set()
+    async def send_image_to_unity(self,e):
+        engine=self.engine;store=engine.store
+        if store.task(e,'image_approval')['status'] not in {'Waiting for Approval','Approved'}:raise ValueError('An image must be ready for review first')
+        if store.config(e).get('presentation_mode')!='image':raise ValueError('Select the image path first')
+        edit=store.task(e,'image_edit')
+        if edit['status']!='Completed':raise ValueError('Image editing must complete first')
+        engine.verify_artifacts(e,'image_edit')
+        image=edit['data'].get('image')
+        if not image or not image.startswith('image-edits/') or image not in edit['data'].get('artifact_checksums',{}):raise ValueError('No validated generated image is ready')
+        await engine.scene_planning.enable(e,'Rebuild the existing Unity scene to match the selected edited image closely.',reference_image=image)
+        store.log(e,'unity_blueprint','Selected edited image as the new Unity reference; user approval remains required.')
+
     def approve_image(self,e):
         engine=self.engine;task=engine.store.task(e,'image_approval')
         if task['status']!='Waiting for Approval':raise ValueError('The image is not awaiting approval')

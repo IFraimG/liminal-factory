@@ -236,3 +236,10 @@ test('visual choice step keeps source selection without showing a previous edite
  const view=await mount(React.createElement(ExtendedRelease,{detail,view:'visual_choice',onRefresh:async()=>{}}));
  try{assert(document.querySelector('[aria-label="Visual source"]'));assert.equal(document.querySelector('.image-review'),null)}finally{await view.close()}
 });
+
+test('image approval can send the selected image back to Unity',async()=>{
+ const calls=[];globalThis.workflowApi=async(...args)=>{calls.push(args)};
+ const detail={...releaseDetail,config:{...releaseDetail.config,presentation_mode:'image'},tasks:[...releaseDetail.tasks,{name:'image_edit',status:'Completed',data:{image:'image-edits/a.png'}},{name:'image_approval',status:'Waiting for Approval',data:{}}]};
+ const view=await mount(React.createElement(ExtendedRelease,{detail,view:'image_approval',onRefresh:async()=>{}}));
+ try{await act(()=>button('Use this image to rebuild Unity scene').click());assert.deepEqual(calls,[['/episodes/episode-a/image-to-unity','POST']])}finally{await view.close()}
+});
