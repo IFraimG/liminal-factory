@@ -33,6 +33,8 @@ class EpisodeInput(BaseModel):
     presentation_minutes: float|None=Field(default=None,gt=0,le=180)
     presentation_mode: Literal['video','image']='video'
     resolution: str='1080p'
+    image_resolution: Literal['1920x1080','2560x1440','3840x2160']='1920x1080'
+    agent_guidance: str=Field(default='',max_length=8000)
     fps: int=24
     audio_mode: str='Seamless Loop'
     audio_gain_db: float=Field(default=0,ge=-24,le=12)
@@ -41,6 +43,9 @@ class EpisodeInput(BaseModel):
     style: str='Liminal Space'
     output_directory: str=''
     agent_priorities: dict[str,list[str]]=Field(default_factory=dict)
+    @field_validator('agent_guidance')
+    @classmethod
+    def guidance_text(cls,value):return value.strip()
     @field_validator('agent_priorities')
     @classmethod
     def priorities(cls,value):

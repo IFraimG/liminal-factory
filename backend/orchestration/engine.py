@@ -14,6 +14,7 @@ from backend.integrations.process import checksum,contained,PROCESS_OBSERVER
 from backend.integrations.unity import Unity
 from backend.integrations.youtube import channel_titles
 from backend.agents.providers import REFERENCE_POLICY
+from backend.agents.context import episode_context
 from backend.audio.reference import analyze
 from backend.audio.engineer import process_audio
 from backend.media.ffmpeg import assemble
@@ -253,7 +254,7 @@ class Engine:
             if n=='unity_preview':prompt+=' Read the current scene_spec.json first and retain every supported value not changed by this request. Do not reset the camera, seat layout or palette unnecessarily.'
         operation=None
         try:
-            full_prompt=REFERENCE_POLICY+'\n'+prompt+'\nRequired JSON schema: '+json.dumps(schema.model_json_schema())
+            full_prompt=REFERENCE_POLICY+episode_context(self.store.config(e))+'\n'+prompt+'\nRequired JSON schema: '+json.dumps(schema.model_json_schema())
             operation=asyncio.create_task(adapter.launch(root,full_prompt,result,save,**({'schema':schema.model_json_schema()} if isinstance(adapter,CodexCoreAdapter) else {})))
             while True:
                 done,_=await asyncio.wait({operation},timeout=self.quota_poll_interval)
