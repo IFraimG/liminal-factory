@@ -6,6 +6,7 @@ from backend.integrations.process import checksum,contained,run
 from backend.media.ffmpeg import probe
 from backend.media.extend import extend_visual
 from backend.models.schema import ImageEditResult
+from backend.audio.settings import extension_settings
 from backend.orchestration.workflow import EXTENDED_DAG
 from backend.orchestration.versions import Versions
 
@@ -24,7 +25,7 @@ class Presentation:
         engine=self.engine;store=engine.store;root=engine.directory(e);config=store.config(e)
         if store.task(e,'visual_render')['status']!='Completed':raise ValueError('Finish the Unity recording first')
         names={'visual_choice','image_edit','image_approval','visual_extend','final_assembly'}
-        audio_changed=config.get('presentation_minutes')!=request.minutes or config.get('audio_mode')!='Variational Extend'
+        audio_changed=extension_settings(config)!=(request.minutes,'Variational Extend')
         if audio_changed:names.add('audio_engineer')
         if any((e,n) in engine.running for n in names):raise ValueError('Stop the affected post-production tasks before changing the release')
         if any(r['status'] in {'Planning','Waiting for quota','Waiting for CLI','Waiting for Permission','Applying'} for r in engine.revisions.rows(e)):raise ValueError('Finish or cancel the revision analysis first')

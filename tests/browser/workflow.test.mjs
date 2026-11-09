@@ -161,3 +161,8 @@ test('initial settings show explicit photo/video pixels and save free-form episo
   assert.deepEqual(updates.at(-1),['image_resolution','2560x1440']);assert.match(document.body.textContent,/Later corrections/);
  }finally{await view.close()}
 });
+
+test('extended release starts with the current audio target for new episodes',async()=>{
+ const view=await mount(React.createElement(ExtendedRelease,{detail:{...releaseDetail,config:{postproduction_enabled:true,duration_minutes:42,recording_minutes:3}},onRefresh:async()=>{}}));
+ try{assert.equal(document.querySelector('[aria-label="Release duration (minutes)"]').value,'42')}finally{await view.close()}
+});
