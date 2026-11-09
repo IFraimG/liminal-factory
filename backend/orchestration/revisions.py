@@ -120,7 +120,7 @@ class Revisions:
                     'recording changes resolution/FPS/duration only; music_brief changes generated music instructions and requires music import/approval; audio_processing changes mix level/fades/mode; metadata changes titles/description/hashtags only. '
                     'Use allowed_fields for narrow edits: e.g. metadata description only must allow description only; changing titles also allows recommended. Unity fields use exact scene_spec.json keys: '+', '.join(SceneSpec.model_fields)+'. An empty list allows the whole chosen scope. Never reset independent scopes just because they were earlier in the pipeline. Scene changes alone do not require re-downloading, re-analyzing music or regenerating metadata. '
                     'Use config_updates only for explicitly requested supported settings; all other entries must be null. For unsupported or ambiguous requests set needs_clarification and explain; do not invent capability. '
-                    'The Unity scene builder supports enclosed subway/corridor, seat layout, camera pose/FOV, fog density, tint, and inclusion of a stylized seated figure; it does not support arbitrary mesh/character reconstruction. '
+                    'The Unity scene builder supports generic declarative custom scenes using bounded primitive groups, procedural materials, lights, camera and weather, plus legacy enclosed subway/corridor and seat layout, camera pose/FOV, fog density, tint, and inclusion of a stylized seated figure; it does not support arbitrary mesh/character reconstruction. '
                     'Read the entire conversation below and incorporate every clarification answer. Do not repeat an already answered question. You cannot extend the scene builder in this planning operation; user permission alone does not add unsupported rendering capabilities. Explain that limitation rather than asking permission for implementation you cannot perform. '
                     'Requested scope: '+row['scope']+'. Current output settings: '+json.dumps({key:config.get(key) for key in ('style','fps','resolution','recording_minutes','duration_minutes','audio_mode','audio_gain_db','audio_fade_seconds')})+
                     '\nOriginal user request: '+row['prompt']+'\nConversation (ordered user messages and agent questions): '+json.dumps(conversation(row),ensure_ascii=False)+'\nJSON schema: '+json.dumps(RevisionPlan.model_json_schema()))
@@ -146,7 +146,7 @@ class Revisions:
             if store.task(e,'final_assembly')['status']!='Completed' or checksum(root/'output/final.mp4')!=row['data']['base_final_sha256']:raise ValueError('The current final changed during analysis. Submit the request again against the latest version.')
             # Claim the episode for the short snapshot/reset phase. Independent running tasks are untouched.
             for name in affected:
-                if (e,name) in engine.running:await engine.cancel(e,name)
+                if (e,name) in engine.running and not engine.running[(e,name)].done():await engine.cancel(e,name)
             snapshot=asyncio.create_task(asyncio.to_thread(Versions(store,engine.root).archive,e,affected,identifier))
             try:version=await asyncio.shield(snapshot)
             except asyncio.CancelledError:

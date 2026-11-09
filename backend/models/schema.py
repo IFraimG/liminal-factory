@@ -29,6 +29,7 @@ class EpisodeInput(BaseModel):
     permission: bool=True
     duration_minutes: float=Field(default=60,gt=0,le=180)
     recording_minutes: float|None=Field(default=None,gt=0,le=180)
+    unity_planning_enabled: bool=True
     channel_review_enabled: bool=True
     postproduction_enabled: bool=True
     presentation_minutes: float|None=Field(default=None,gt=0,le=180)
@@ -132,35 +133,140 @@ class Metadata(BaseModel):
         if not re.fullmatch(r'#[A-Za-z0-9_]+(?:, #[A-Za-z0-9_]+)*',self.hashtags): raise ValueError('Hashtags must be #tag, #tag')
         return self
 
+class SceneMaterial(BaseModel):
+    model_config={'extra':'forbid'}
+    name: str=Field(min_length=1,max_length=80)
+    color: list[float]=Field(min_length=3,max_length=3)
+    roughness: float=Field(default=.85,ge=0,le=1)
+    metallic: float=Field(default=0,ge=0,le=1)
+    emission: float=Field(default=0,ge=0,le=5)
+    texture: Literal['flat','plaster','concrete','brick','wood','metal','fabric','snow','asphalt']='flat'
+    texture_scale: float=Field(default=1,gt=0,le=50)
+    @field_validator('color')
+    @classmethod
+    def rgb(cls,v):
+        if any(not 0<=x<=1 for x in v):raise ValueError('RGB must be within 0..1')
+        return v
+
+class SceneObject(BaseModel):
+    model_config={'extra':'forbid'}
+    name: str=Field(min_length=1,max_length=120)
+    primitive: Literal['box','sphere','cylinder','capsule','quad']
+    position: list[float]=Field(min_length=3,max_length=3)
+    scale: list[float]=Field(min_length=3,max_length=3)
+    rotation: list[float]=Field(default_factory=lambda:[0,0,0],min_length=3,max_length=3)
+    material: str
+    alternate_material: str=''
+    alternate_probability: float=Field(default=0,ge=0,le=1)
+    repeat: list[int]=Field(default_factory=lambda:[1,1,1],min_length=3,max_length=3)
+    step: list[float]=Field(default_factory=lambda:[0,0,0],min_length=3,max_length=3)
+    jitter: list[float]=Field(default_factory=lambda:[0,0,0],min_length=3,max_length=3)
+    @model_validator(mode='after')
+    def bounded(self):
+        import math
+        if any(not math.isfinite(x) or abs(x)>500 for x in self.position+self.step+self.jitter):raise ValueError('Object coordinates must be finite and within 500m')
+        if any(not math.isfinite(x) or not .001<=x<=500 for x in self.scale):raise ValueError('Object scale must be 0.001..500m')
+        if any(not math.isfinite(x) or abs(x)>360 for x in self.rotation):raise ValueError('Rotation must be finite degrees')
+        if any(not 1<=x<=100 for x in self.repeat) or math.prod(self.repeat)>2000:raise ValueError('Repeat budget exceeded')
+        if any(abs(self.position[i])+abs(self.step[i])*(self.repeat[i]-1)+abs(self.jitter[i])>500 for i in range(3)):raise ValueError('Repeated geometry extends beyond 500m')
+        return self
+
+class SceneLight(BaseModel):
+    model_config={'extra':'forbid'}
+    name: str=Field(min_length=1,max_length=80)
+    kind: Literal['point','spot','directional']
+    position: list[float]=Field(min_length=3,max_length=3)
+    rotation: list[float]=Field(default_factory=lambda:[0,0,0],min_length=3,max_length=3)
+    color: list[float]=Field(min_length=3,max_length=3)
+    intensity: float=Field(ge=0,le=8)
+    range: float=Field(default=15,gt=0,le=150)
+    spot_angle: float=Field(default=60,ge=1,le=170)
+    @model_validator(mode='after')
+    def bounded(self):
+        import math
+        if any(not math.isfinite(x) or abs(x)>500 for x in self.position+self.rotation):raise ValueError('Light coordinates must be finite and within limits')
+        if any(not 0<=x<=1 for x in self.color):raise ValueError('Light RGB must be within 0..1')
+        return self
+
 class SceneSpec(BaseModel):
     seed: int=Field(default=1701,ge=0,le=1000000)
-    fog_density: float=Field(default=.027,ge=.005,le=.08)
+    fog_density: float=Field(default=.027,ge=0,le=.08)
     camera_fov: float=Field(default=62,ge=35,le=90)
     column_spacing: float=Field(default=9,ge=5,le=12)
     tint_r: float=Field(default=.48,ge=.1,le=.85)
     tint_g: float=Field(default=.48,ge=.1,le=.85)
     tint_b: float=Field(default=.35,ge=.1,le=.85)
-    scene_type: Literal['subway_car','enclosed_corridor']='enclosed_corridor'
+    scene_type: Literal['subway_car','enclosed_corridor','custom_scene']='enclosed_corridor'
     seat_layout: Literal['longitudinal','transverse']='transverse'
-    camera_x: float=Field(default=.25,ge=-1.4,le=1.4)
-    camera_y: float=Field(default=1.15,ge=.5,le=2.2)
-    camera_z: float=Field(default=-3,ge=-7,le=7)
-    camera_pitch: float=Field(default=3,ge=-30,le=30)
+    camera_x: float=Field(default=.25,ge=-100,le=100)
+    camera_y: float=Field(default=1.15,ge=.5,le=40)
+    camera_z: float=Field(default=-3,ge=-100,le=100)
+    camera_pitch: float=Field(default=3,ge=-85,le=85)
     camera_yaw: float=Field(default=35,ge=-180,le=180)
     camera_roll: float=Field(default=-10,ge=-25,le=25)
     include_figure: bool=False
+    custom_materials: list[SceneMaterial]=Field(default_factory=list,max_length=64)
+    custom_objects: list[SceneObject]=Field(default_factory=list,max_length=400)
+    custom_lights: list[SceneLight]=Field(default_factory=list,max_length=32)
+    sky_color: list[float]=Field(default_factory=lambda:[.025,.03,.025],min_length=3,max_length=3)
+    ambient_color: list[float]=Field(default_factory=lambda:[.32,.33,.28],min_length=3,max_length=3)
+    fog_color: list[float]=Field(default_factory=lambda:[.12,.12,.09],min_length=3,max_length=3)
+    weather: Literal['none','snow','rain','dust']='none'
+    weather_amount: float=Field(default=.5,ge=0,le=1)
+    weather_area: list[float]=Field(default_factory=lambda:[60,30,80],min_length=3,max_length=3)
+    @model_validator(mode='after')
+    def custom_scene_valid(self):
+        import math
+        for vector in (self.sky_color,self.ambient_color,self.fog_color):
+            if any(not 0<=x<=1 for x in vector):raise ValueError('Environment RGB must be within 0..1')
+        if any(not 1<=x<=200 for x in self.weather_area):raise ValueError('Weather area must be 1..200m')
+        names=[m.name for m in self.custom_materials]
+        if len(names)!=len(set(names)):raise ValueError('Material names must be unique')
+        if sum(math.prod(o.repeat) for o in self.custom_objects)>6000:raise ValueError('Scene object budget exceeds 6000 instances')
+        if any(o.material not in names or (o.alternate_material and o.alternate_material not in names) for o in self.custom_objects):raise ValueError('Object uses an undefined material')
+        if self.scene_type=='custom_scene' and (not self.custom_objects or not self.custom_materials):raise ValueError('Custom scene needs actual geometry and materials')
+        return self
     explanation: str=Field(min_length=10)
 
 class SceneDesign(SceneSpec):
     seat_layout: Literal['longitudinal','transverse']
-    scene_type: Literal['subway_car','enclosed_corridor']
-    camera_x: float=Field(ge=-1.4,le=1.4)
-    camera_y: float=Field(ge=.5,le=2.2)
-    camera_z: float=Field(ge=-7,le=7)
-    camera_pitch: float=Field(ge=-30,le=30)
+    scene_type: Literal['subway_car','enclosed_corridor','custom_scene']
+    camera_x: float=Field(ge=-100,le=100)
+    camera_y: float=Field(ge=.5,le=40)
+    camera_z: float=Field(ge=-100,le=100)
+    camera_pitch: float=Field(ge=-85,le=85)
     camera_yaw: float=Field(ge=-180,le=180)
     camera_roll: float=Field(ge=-25,le=25)
     include_figure: bool
+
+class UnityBlueprint(BaseModel):
+    model_config={'extra':'forbid'}
+    scene_type: Literal['subway_car','enclosed_corridor','custom_scene','unsupported']
+    reference_observations: str=Field(min_length=100,max_length=6000)
+    geometry_and_layout: str=Field(min_length=100,max_length=6000)
+    materials_and_surface_detail: str=Field(min_length=80,max_length=5000)
+    lighting_and_color: str=Field(min_length=80,max_length=5000)
+    camera_and_composition: str=Field(min_length=80,max_length=4000)
+    atmosphere_and_motion: str=Field(min_length=60,max_length=4000)
+    implementation_prompt: str=Field(min_length=1000,max_length=24000)
+    fidelity_checks: list[str]=Field(min_length=6,max_length=24)
+    limitations: list[str]=Field(min_length=1,max_length=20)
+
+class UnityFidelityCheck(BaseModel):
+    criterion: str=Field(min_length=3,max_length=1000)
+    passed: bool
+    observation: str=Field(min_length=10,max_length=2000)
+
+class UnityFidelityReport(BaseModel):
+    reference_category: str=Field(min_length=3,max_length=500)
+    rendered_category: str=Field(min_length=3,max_length=500)
+    category_matches: bool
+    checks: list[UnityFidelityCheck]=Field(min_length=6,max_length=24)
+    summary: str=Field(min_length=30,max_length=4000)
+    limitations: list[str]=Field(min_length=1,max_length=20)
+
+class UnityBlueprintRequest(BaseModel):
+    feedback: str=Field(default='',max_length=8000)
 
 class RecordingPlan(BaseModel):
     duration_minutes: float=Field(gt=0,le=180)

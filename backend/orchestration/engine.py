@@ -9,6 +9,7 @@ from backend.orchestration.revisions import Revisions
 from backend.orchestration.versions import Versions
 from backend.orchestration.presentation import Presentation
 from backend.orchestration.channel_review import ChannelReview
+from backend.orchestration.scene_planning import ScenePlanning,CAPABILITIES
 from backend.integrations.quota import QuotaRouter,eligible
 from backend.models.schema import MusicBrief,SunoMusicBrief,VisualBrief,Metadata,SceneSpec,SceneDesign,RecordingPlan,StepPreparation,step_preparation_schema
 from backend.integrations.process import checksum,contained,PROCESS_OBSERVER
@@ -31,7 +32,7 @@ class Engine:
     def __init__(self,store,root,settings,adapter=None,handlers=None):
         self.store=store; self.root=Path(root); self.settings=settings; self.adapter=adapter
         self.semaphore=asyncio.Semaphore(settings.max_concurrent_agents); self.running={}; self.wake=asyncio.Event(); self.stopping=False
-        self.handlers=handlers or {}; self.scheduler=None; self._client_session=None; self._kimi_session=None; self.quota=QuotaRouter(self.manual_quota); self.quota_poll_interval=10; self.revisions=Revisions(self); self.presentation=Presentation(self); self.channel_review=ChannelReview(self)
+        self.handlers=handlers or {}; self.scheduler=None; self._client_session=None; self._kimi_session=None; self.quota=QuotaRouter(self.manual_quota); self.quota_poll_interval=10; self.revisions=Revisions(self); self.presentation=Presentation(self); self.channel_review=ChannelReview(self); self.scene_planning=ScenePlanning(self)
     def workflow(self,e):return workflow(self.store.config(e))
     def directory(self,e): return contained(self.root,e)
     def tool(self,name):
@@ -326,7 +327,14 @@ class Engine:
             minutes,mode=extension_settings(c)
             await process_audio(paths,root/'final.wav',minutes*60,mode,self.tool('ffmpeg'),self.tool('ffprobe'),gain_db=c.get('audio_gain_db',0),fade_seconds=c.get('audio_fade_seconds',0))
             return {'artifacts':['final.wav','final.report.json']}
+        if n=='unity_blueprint':return await self.scene_planning.generate(e)
         if n=='unity_preview':
+            blueprint=None
+            if c.get('unity_planning_enabled'):
+                from backend.models.schema import UnityBlueprint
+                self.verify_artifacts(e,'unity_blueprint')
+                blueprint=UnityBlueprint.model_validate_json((root/'unity_blueprint.json').read_text())
+                if blueprint.scene_type=='unsupported':raise ValueError('Unity blueprint requires unsupported geometry: '+'; '.join(blueprint.limitations))
             checkpoint=self.store.task(e,n)['data'].get('preview_checkpoint')
             reuse=bool(checkpoint)
             if reuse:
@@ -338,14 +346,23 @@ class Engine:
                 result={'artifacts':checkpoint['artifacts']}
                 self.store.log(e,n,'Reusing verified Unity preview; resuming visual QA only.')
             else:
-                spec=await self.ask(e,n,'Inspect the actual images in references/ and read visual_reference.json. Choose scene_type subway_car for an enclosed train interior or enclosed_corridor for a corridor. Select seat_layout transverse for rows of high-backed seats perpendicular to the walls (as in the supplied train reference), or longitudinal for continuous wall benches. Subway geometry includes opaque walls and ceiling, dark framed windows, brown bench seats, rails, hanging rings, fluorescent fixtures and optional seated hooded figure. Unity axes: yaw 0 looks toward +Z; positive yaw looks toward +X. The optional figure sits on the right bench near (1.08, 1.0, 0.7). Keep it in view when included. A verified low diagonal starting camera is (-0.25, 1.13, -3), pitch 2, yaw 43, roll -12, FOV 64. Choose camera position, pitch, yaw, roll and FOV to match the reference composition. Explain limitations honestly; do not describe objects the renderer cannot build. Style: '+c['style'],SceneDesign)
+                instruction='Inspect the actual images in references/ and read visual_reference.json. '+CAPABILITIES+' Choose scene category from observed geometry, not style labels. Use the reference camera height, composition, light and palette. For custom_scene return custom_materials, custom_objects and custom_lights that implement the observed scene: meaningful geometry groups, repeated structural detail, believable proportions and materials, light distribution, environment colors and weather. Do not return a few placeholder cubes. The sky/ambient/fog colors must follow the reference. Use exterior-scale positions and appropriate camera height when observed. For interiors preserve appropriate camera bounds and include a figure only when observed/requested. Explain approximation limits honestly.'
+                if blueprint:instruction+=' Read unity_blueprint.json and unity_blueprint.md in full. Implement their scene-building prompt and all fidelity checks. The scene_type MUST equal '+blueprint.scene_type+'. Do not substitute another scene category or ignore the prompt. Later scoped user feedback overrides only conflicting details.'
+                spec=await self.ask(e,n,instruction,SceneDesign)
+                if blueprint and spec['result']['scene_type']!=blueprint.scene_type:raise ValueError('Scene design changed the reference category; Unity was not started')
                 (root/'scene_spec.json').write_text(json.dumps(spec['result'],indent=2))
                 result=await Unity(self.tool('unity'),self.tool('ffmpeg'),self.tool('ffprobe')).render(root,c,True)
                 paths=set(result['artifacts']+['scene_spec.json','visual_reference.json','references.json','preview-frames/frame-00000.png','preview-frames/complete.json'])
+                if blueprint:paths.update(['unity_blueprint.json','unity_blueprint.md'])
                 paths.update(json.loads((root/'references.json').read_text()))
                 checkpoint={'artifacts':result['artifacts'],'checksums':{path:checksum(contained(root,path)) for path in paths}}
                 data=self.store.task(e,n)['data']; self.store.update(e,n,data={**data,**result,'preview_checkpoint':checkpoint})
-            qa=await self.ask(e,n,'Inspect preview-frames/frame-00000.png and the actual images in references/. Compare architecture, palette, framing and atmosphere. Describe discrepancies and suggestions truthfully, using the VisualBrief fields. Do not claim a match without inspecting both.',VisualBrief)
+            if blueprint:
+                from backend.models.schema import UnityFidelityReport
+                qa=await self.ask(e,n,'Inspect the pixels of preview-frames/frame-00000.png and every actual reference listed in references.json. Read unity_blueprint.json. Compare the requested scene category and each fidelity check with what is actually visible. At least six concrete observations must cover architecture/objects, framing, proportions, surface detail, lighting and atmosphere. If an exterior became an interior (or any essential scene category changed), category_matches MUST be false. Describe missing detail and approximation limits honestly; do not claim photorealism or exact correspondence. Do not change the scene or files other than the required JSON.',UnityFidelityReport)
+                if not qa['result']['category_matches']:raise ValueError('Unity preview does not match the reference scene category. Regenerate the detailed Unity prompt with the reported differences. '+qa['result']['summary'])
+            else:
+                qa=await self.ask(e,n,'Inspect preview-frames/frame-00000.png and the actual images in references/. Compare architecture, palette, framing and atmosphere. Describe discrepancies and suggestions truthfully, using the VisualBrief fields. Do not claim a match without inspecting both.',VisualBrief)
             return {'artifacts':result['artifacts']+qa['artifacts'],'qa':qa['result']}
         if n=='recording_setup':
             minutes=c.get('recording_minutes')
@@ -452,7 +469,7 @@ class Engine:
         reason=reason.strip()
         if len(reason)<3 or len(reason)>8000: raise ValueError('Describe the requested changes in 3–8000 characters')
         # Invalidate all transitive downstream consumers before rerunning upstream work.
-        source='music_brief' if n=='music_approval' else 'unity_preview'
+        source='music_brief' if n=='music_approval' else 'unity_blueprint' if self.store.config(e).get('unity_planning_enabled') else 'unity_preview'
         affected={source,n}; changed=True
         while changed:
             new={task for task,deps in self.workflow(e).items() if any(d in affected for d in deps)}-affected
@@ -485,6 +502,7 @@ class Engine:
             names=[str(p.relative_to(root)) for p in paths]; names+=['music_brief.json']
         else:
             names=['preview.mp4','unity_preview.json','scene_spec.json','unity-project/Assets/Editor/LiminalScene.cs','visual_reference.json']
+            if self.store.config(e).get('unity_planning_enabled'):names+=['unity_blueprint.json','unity_blueprint.md']
         data={'checksums':{name:checksum(contained(root,name)) for name in names}}
         if n=='music_approval': data['music']=[name for name in names if name.startswith('music/')]
         self.store.update(e,n,'Approved',data=data); self.store.log(e,n,'Approved with SHA-256 checksums'); self.wake.set()

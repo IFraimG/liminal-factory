@@ -2,7 +2,7 @@
 from backend.orchestration.workflow import ALL_TASKS,GATES
 
 PROVIDERS=('codex','antigravity','kimi')
-AI_TASKS={'music_brief','visual_reference','unity_preview','metadata','recording_setup','image_edit'}
+AI_TASKS={'music_brief','visual_reference','unity_blueprint','unity_preview','metadata','recording_setup','image_edit'}
 LOCAL_TASKS=ALL_TASKS-GATES-AI_TASKS
 ACTIVE_STATUSES={'Running','Waiting for Client','Waiting for CLI','Waiting for Permission','Waiting for quota'}
 

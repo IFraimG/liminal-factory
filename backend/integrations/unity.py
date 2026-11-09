@@ -25,7 +25,7 @@ class Unity:
         editor=project/'Assets/Editor'; editor.mkdir(parents=True,exist_ok=True)
         script='LiminalScene.cs' if preview else 'LiminalRecording.cs'
         shutil.copy2(template_path()/'Assets/Editor'/script,editor/script)
-        w,h=(640,360) if preview else {'1080p':(1920,1080),'1440p':(2560,1440),'4K':(3840,2160)}[config['resolution']]
+        w,h=(1280,720) if preview else {'1080p':(1920,1080),'1440p':(2560,1440),'4K':(3840,2160)}[config['resolution']]
         folder=root/('preview-frames' if preview else 'recording-frames'); folder.mkdir(exist_ok=True)
         for name in ('complete.json','progress.json','error.txt'):(folder/name).unlink(missing_ok=True)
         c={'width':w,'height':h,'fps':12 if preview else config['fps'],'seconds':config['loop_seconds'] if preview else (config.get('recording_minutes') or config['duration_minutes'])*60,'style':config['style']}

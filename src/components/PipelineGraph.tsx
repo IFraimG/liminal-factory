@@ -5,7 +5,7 @@ export const agentNames:Record<string,string>={codex:'GPT · Codex',antigravity:
 const shortNames:Record<string,string>={codex:'GPT',antigravity:'Argon',kimi:'Kimi'};
 const pretty=(name:string)=>name.replaceAll('_',' ').replace(/\b\w/g,c=>c.toUpperCase());
 const music=new Set(['audio_reference','music_brief','music_approval','audio_engineer']);
-const visual=new Set(['visual_reference','unity_preview','visual_approval','recording_setup','visual_render','visual_choice','image_edit','image_approval','visual_extend','final_assembly']);
+const visual=new Set(['visual_reference','unity_blueprint','unity_preview','visual_approval','recording_setup','visual_render','visual_choice','image_edit','image_approval','visual_extend','final_assembly']);
 export function graphLayout(workflow:Record<string,string[]>){
  const ranks:Record<string,number>={};
  function rank(name:string,trail=new Set<string>()):number{
