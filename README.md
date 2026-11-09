@@ -570,3 +570,8 @@ API: `POST /episodes/{id}/channel-review/search` принимает `action` (`s
 Перед отправкой нового задания приложение проверяет готовность Client; при неудаче выполняет до трёх проверок с короткими паузами. Устойчиво недоступный Client блокирует новую отправку. Прямой запуск Gemini/agy отсутствует.
 
 После отправки мониторинг использует уже подтверждённый процесс Herdr: идентификатор панели, PID, executable, время создания и nonce сеанса. Приём JSON требует завершённого нового хода и проходит прежние проверки размера, схемы и исходных данных. Временная недоступность HTTP `/health` больше не сбрасывает такой сеанс и не отменяет готовый результат. Замена процесса или ручное отключение по-прежнему прекращают работу. Разрешения CLI пользователь подтверждает самостоятельно. Старую уже упавшую задачу можно восстановить через **Recover saved result**, если её JSON сохранён, либо повторить через **Retry Task**.
+
+
+### Audio reference permission defaults
+
+New Episode opens with **I have permission to obtain and analyze this audio excerpt** checked. The API's EpisodeInput also defaults `permission` to `true` when omitted. You can still explicitly uncheck the box; a saved `false` continues to block audio download/analysis. This field is the episode's audio-reference permission, separate from macOS privacy prompts and Herdr CLI tool approvals.
