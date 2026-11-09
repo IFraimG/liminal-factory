@@ -79,7 +79,7 @@ async def test_wait_resumes_only_after_manual_binding(tmp_path):
 async def test_proxy_loss_and_process_replacement_require_reconfirmation(tmp_path):
     session=ClientFixture(tmp_path);await session.bind('t7',True)
     nonce=session.binding['nonce'];session.proxy=False
-    with pytest.raises(ClientSessionError,match='disappeared'): await session.verify()
+    with pytest.raises(ClientSessionError,match='unavailable after 3 checks'): await session.verify()
     assert session.binding is None
     session.proxy=True;await session.bind('t7',True)
     assert session.binding['nonce']!=nonce
@@ -315,3 +315,57 @@ async def test_late_metadata_recovers_only_valid_original_result(tmp_path):
     assert task['data']['artifact_checksums']['metadata.json']==checksum(root/'metadata.json')
     assert not any(c[0] in ('send','run','keys') for c in s.calls)
     with pytest.raises(ValueError,match='inactive failed'): await engine.recover_late_result(eid,'metadata')
+
+
+async def test_completed_result_survives_proxy_loss_after_prompt(tmp_path):
+    s=ClientFixture(tmp_path);await s.bind('t7',True);original=s.command
+    async def command(*args,**kwargs):
+        value=await original(*args,**kwargs)
+        if args[0]=='send':s.proxy=False
+        return value
+    s.command=command
+    value=await AntigravityAdapter(s).launch(tmp_path,'Task','completed.json',lambda _:None)
+    assert value['brief']=='A quiet atmosphere' and s.binding
+    assert sum(c[0]=='send' for c in s.calls)==1
+    assert not any(c[0] in ('interrupt','run','kill') for c in s.calls)
+
+async def test_proxy_outage_and_status_poll_preserve_busy_session_until_result(tmp_path):
+    s=ClientFixture(tmp_path);await s.bind('t7',True);s.complete=False
+    adapter=AntigravityAdapter(s);adapter.poll_interval=.003
+    task=asyncio.create_task(adapter.launch(tmp_path,'Task','outage.json',lambda _:None))
+    await s.sent.wait();nonce=s.binding['nonce'];s.proxy=False
+    await asyncio.sleep(.02)
+    assert not task.done()
+    status=await s.status()
+    assert status['state']=='Waiting for Client' and s.binding['nonce']==nonce
+    s.terminal['status']['state']='blocked';await asyncio.sleep(.02)
+    assert not task.done() and not any(c[0]=='interrupt' for c in s.calls)
+    (tmp_path/'outage.json').write_text('{"ok":true}')
+    s.terminal['turn']+=1;s.terminal['status']['state']='done'
+    assert await task=={'ok':True}
+    # A subsequent request must still wait for Client; the old result is not a launch grant.
+    with pytest.raises(ClientSessionError,match='unavailable after 3 checks'):await s.verify()
+    assert not s.binding
+
+async def test_replaced_cli_is_rejected_even_when_proxy_is_offline(tmp_path):
+    s=ClientFixture(tmp_path);await s.bind('t7',True);s.complete=False
+    adapter=AntigravityAdapter(s);adapter.poll_interval=.003
+    task=asyncio.create_task(adapter.launch(tmp_path,'Task','replaced.json',lambda _:None))
+    await s.sent.wait();s.proxy=False;s.terminal['foreground']['pid']+=1
+    (tmp_path/'replaced.json').write_text('{"forged":true}');s.terminal['turn']+=1;s.terminal['status']['state']='done'
+    with pytest.raises(ClientSessionError,match='another process'):await task
+    assert not s.binding
+
+async def test_pre_send_health_flicker_is_retried_without_losing_binding(tmp_path):
+    s=ClientFixture(tmp_path);await s.bind('t7',True)
+    checks=iter([False,True])
+    async def health():return next(checks)
+    s.health=health;nonce=s.binding['nonce']
+    assert (await s.verify())['address']=='t7'
+    assert s.binding['nonce']==nonce
+
+async def test_offline_proxy_blocks_new_prompt_without_terminal_input(tmp_path):
+    s=ClientFixture(tmp_path);await s.bind('t7',True);s.proxy=False
+    with pytest.raises(ClientSessionError,match='unavailable after 3 checks'):
+        await AntigravityAdapter(s).launch(tmp_path,'Task','never.json',lambda _:None)
+    assert not any(c[0] in ('send','run','interrupt') for c in s.calls)

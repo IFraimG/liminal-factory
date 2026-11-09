@@ -123,13 +123,21 @@ class AntigravitySession:
     def unbind(self,manual=False):
         self.binding=None; self.ready.clear(); self.discovery_wait_state=None
         if manual: self.auto_connect_enabled=False
-    async def verify(self,identity=None):
+    async def verify(self,identity=None,require_proxy=True):
         binding=self.binding
         if not binding: raise ClientSessionError('Waiting for a Client-launched CLI. Open Settings → Antigravity Client and connect its Herdr pane.')
         if identity and identity.get('session_nonce')!=binding['nonce']:
             raise ClientSessionError('The confirmed Client session has changed; the previous task cannot control it')
-        if not await self.health():
-            self.unbind(); raise ClientSessionError('Antigravity Client proxy disappeared. No direct Gemini/agy fallback was started.')
+        if require_proxy:
+            # A new prompt/control operation needs a healthy Client. A single
+            # timeout is not proof that its proxy has gone away.
+            for attempt in range(3):
+                if await self.health():break
+                if attempt==2:
+                    self.unbind();raise ClientSessionError('Antigravity Client proxy is unavailable after 3 checks. Restore Client before sending a new task. No direct Gemini/agy fallback was started.')
+                await asyncio.sleep(.25*(attempt+1))
+            if self.binding is not binding:
+                raise ClientSessionError('The confirmed Client session changed during readiness checks')
         try: terminal=await self.command('get',binding['address'],'--json')
         except (RuntimeError,ValueError,OSError):
             self.unbind(); raise ClientSessionError('Connected Herdr pane is unavailable. Reconnect your Client-launched session.')
@@ -165,7 +173,7 @@ class AntigravitySession:
         proxy=await self.health(); error=''; candidates=[]
         try:
             candidates=await self.candidates()
-            if self.binding: await self.verify()
+            if self.binding: await self.verify(require_proxy=False)
             else: await self.auto_connect()
         except (RuntimeError,ValueError,OSError,KeyError) as exc: error=str(exc)
         return {'state':'Ready' if self.binding and proxy else 'Waiting for CLI' if proxy else 'Waiting for Client',
@@ -207,7 +215,10 @@ class AntigravityAdapter:
                 self.active=identity
                 remaining=timeout;last_tick=time.monotonic();last_state=None
                 while True:
-                    terminal=await self.session.verify(identity); state=self.session.word(terminal)
+                    # Observe the existing process independently of the HTTP proxy.
+                    # This does not send input or start another CLI. A finished
+                    # turn and its JSON remain valid if Client health flickers.
+                    terminal=await self.session.verify(identity,require_proxy=False); state=self.session.word(terminal)
                     now=time.monotonic()
                     if last_state!='blocked': remaining-=now-last_tick
                     last_tick=now
@@ -240,5 +251,5 @@ class AntigravityAdapter:
             return self.session.word(terminal) in {'idle','done'}
         except (RuntimeError,ValueError,KeyError,OSError): return False
     async def logs(self,identity):
-        await self.session.verify(identity)
+        await self.session.verify(identity,require_proxy=False)
         return await self.session.command('read',identity['pane'],'--lines','0',raw=True)
