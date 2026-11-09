@@ -360,7 +360,8 @@ class Engine:
             shutil.copy2(root/'metadata.json',out/'metadata.json')
             if c.get('output_directory'):
                 revision_id=self.store.task(e,n)['data'].get('revision_id')
-                destination=Path(c['output_directory']).expanduser().resolve()/('liminal-'+e+('-r-'+revision_id[:8] if revision_id else ''))
+                suffix='-extended-'+uuid.uuid4().hex[:12] if c.get('postproduction_enabled') else '-r-'+revision_id[:8] if revision_id else ''
+                destination=Path(c['output_directory']).expanduser().resolve()/('liminal-'+e+suffix)
                 destination.mkdir(parents=True,exist_ok=False)
                 shutil.copy2(out/'final.mp4',destination/'final.mp4'); shutil.copy2(out/'metadata.json',destination/'metadata.json')
             return {'artifacts':['output/final.mp4','output/metadata.json']}
