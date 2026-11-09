@@ -13,8 +13,10 @@ def validate_order(order):
 
 def default_order(provider,task):
     first='antigravity' if provider=='gemini' else provider
-    if task=='recording_setup':first='kimi'
-    return [first,*[p for p in PROVIDERS if p!=first]]
+    order=[first,*[p for p in PROVIDERS if p!=first]]
+    if order.index('antigravity')>order.index('kimi'):
+        order.remove('antigravity');order.insert(order.index('kimi'),'antigravity')
+    return order
 
 def order_for(config,provider,task):
     return list(config.get('agent_priorities',{}).get(task) or default_order(provider,task))

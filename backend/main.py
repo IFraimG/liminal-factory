@@ -10,6 +10,7 @@ from backend.storage.db import Store
 from backend.orchestration.engine import Engine,PriorityLockedError
 from backend.orchestration.workflow import DAG,GATES
 from backend.orchestration.priorities import LOCAL_TASKS,PROVIDERS,order_for
+from backend.integrations.quota import eligible
 from backend.orchestration.herdr_adapter import HerdrAdapter
 from backend.integrations.process import contained,run,checksum
 from backend.integrations.unity import discover
@@ -186,9 +187,9 @@ async def agent_quotas(refresh:bool=False):
             if manual and manual.get('expires_at',0)>now:value.update(remaining_percent=manual['remaining_percent'],source='manual',checked_at=manual['reported_at'],expires_at=manual['expires_at'])
         if value['source']=='codex-account-rate-limits' and now-(value.get('checked_at') or 0)>30:value.update(remaining_percent=None,source='stale')
         if value.get('expires_at') and value['expires_at']<=now:value.update(remaining_percent=None,source='expired')
-        value['eligible']=value['remaining_percent'] is not None and value['remaining_percent']>=5
+        value['eligible']=eligible(provider,value['remaining_percent'])
         providers[provider]=value
-    return {'providers':providers,'unknown_policy':'Skip unknown balances; wait if no agent has verified quota ≥5%','threshold_percent':5}
+    return {'providers':providers,'unknown_policy':'Unknown Argon quota is allowed; other unknown balances are skipped','threshold_percent':5}
 
 @app.put('/agents/quotas/{provider}')
 async def manual_agent_quota(provider:str,request:Request):

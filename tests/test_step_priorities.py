@@ -48,7 +48,7 @@ def test_approval_stays_human(configured):
         with pytest.raises(ValueError):engine.set_priorities(eid,name,ORDER)
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('balances,expected',[({'antigravity':4.9,'kimi':5,'codex':95},'kimi'),({'antigravity':5,'kimi':90,'codex':100},'antigravity'),({'antigravity':None,'kimi':4,'codex':20},'codex'),({'antigravity':None,'kimi':None,'codex':4.9},None)])
+@pytest.mark.parametrize('balances,expected',[({'antigravity':4.9,'kimi':5,'codex':95},'kimi'),({'antigravity':5,'kimi':90,'codex':100},'antigravity'),({'antigravity':None,'kimi':4,'codex':20},'antigravity'),({'antigravity':4,'kimi':4,'codex':20},'codex'),({'antigravity':4,'kimi':None,'codex':4.9},None)])
 async def test_first_eligible_not_richest_agent(balances,expected,monkeypatch):
     router=QuotaRouter();seen=[]
     async def read(provider,executable):seen.append(provider);return balances[provider]
@@ -76,6 +76,7 @@ async def test_waiting_quota_sends_nothing_and_resumes_on_fresh_report(configure
     engine,store,eid=configured;engine.quota_poll_interval=.005
     async def unavailable(_):return None
     monkeypatch.setattr('backend.integrations.quota.codex_limits',unavailable)
+    engine.set_manual_quota('antigravity',4)
     pending=asyncio.create_task(engine.select_provider(eid,'metadata',ORDER))
     try:
         for _ in range(100):
@@ -93,7 +94,7 @@ async def test_local_steps_prepare_with_selected_agent_before_tools(configured,m
     engine,store,eid=configured;order=[]
     for dependency in __import__('backend.orchestration.workflow',fromlist=['DAG']).DAG[name]:store.update(eid,dependency,'Completed')
     async def ask(e,n,prompt,schema):
-        assert schema is StepPreparation;order.append('agent');return {'result':{'task':n,'summary':'Prepare a concrete local execution plan','checks':['Verify output']},'artifacts':[]}
+        assert issubclass(schema,StepPreparation) and schema.model_json_schema()['properties']['task']['const']==n;order.append('agent');return {'result':{'task':n,'summary':'Prepare a concrete local execution plan','checks':['Verify output']},'artifacts':[]}
     async def dispatch(e,n):order.append('tool');return {'artifacts':[]}
     monkeypatch.setattr(engine,'ask',ask);monkeypatch.setattr(engine,'dispatch',dispatch)
     await engine.execute(eid,name)
@@ -130,8 +131,8 @@ async def test_api_lock_and_workflow_metadata(configured,monkeypatch):
 @pytest.mark.asyncio
 async def test_cancel_waiting_task_unlocks_only_after_it_stops(configured,monkeypatch):
     engine,store,eid=configured;engine.quota_poll_interval=.005
-    async def unavailable(*args):return None
-    monkeypatch.setattr(engine.quota,'read',unavailable)
+    async def insufficient(*args):return 4
+    monkeypatch.setattr(engine.quota,'read',insufficient)
     for name in __import__('backend.orchestration.workflow',fromlist=['DAG']).DAG:store.update(eid,name,'Completed')
     store.update(eid,'metadata','Pending')
     store.execute('INSERT INTO cache VALUES(?,?,?)',('started:'+eid,'true',time.time()))

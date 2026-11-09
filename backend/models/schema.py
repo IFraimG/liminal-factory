@@ -168,3 +168,10 @@ class StepPreparation(BaseModel):
     def bounded_checks(cls,values):
         if any(not 3<=len(v)<=500 for v in values):raise ValueError('Use short concrete checks')
         return values
+
+
+def step_preparation_schema(task):
+    from pydantic import create_model
+    from backend.orchestration.priorities import LOCAL_TASKS
+    if task not in LOCAL_TASKS:raise ValueError('Preparation requires a local execution step')
+    return create_model(task+'Preparation',__base__=StepPreparation,task=(Literal[task],...))

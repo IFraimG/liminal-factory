@@ -4,8 +4,8 @@ from backend.orchestration.workflow import DAG,GATES,AGENT_TASKS
 from backend.orchestration.herdr_adapter import HerdrAdapter
 from backend.integrations.antigravity import AntigravitySession,AntigravityAdapter
 from backend.integrations.kimi import KimiSession
-from backend.integrations.quota import QuotaRouter
-from backend.models.schema import MusicBrief,SunoMusicBrief,VisualBrief,Metadata,SceneSpec,SceneDesign,RecordingPlan,StepPreparation
+from backend.integrations.quota import QuotaRouter,eligible
+from backend.models.schema import MusicBrief,SunoMusicBrief,VisualBrief,Metadata,SceneSpec,SceneDesign,RecordingPlan,StepPreparation,step_preparation_schema
 from backend.integrations.process import checksum,contained,PROCESS_OBSERVER
 from backend.integrations.unity import Unity
 from backend.integrations.youtube import channel_titles
@@ -40,7 +40,7 @@ class Engine:
         return self._kimi_session
     def herdr(self,task='',provider=None):
         if self.adapter:return self.adapter
-        provider=provider or ('kimi' if task=='recording_setup' else self.settings.agent_kind)
+        provider=provider or self.settings.agent_kind
         if provider=='kimi':return AntigravityAdapter(self.kimi_session())
         if provider in {'gemini','antigravity'}:return AntigravityAdapter(self.client_session())
         return HerdrAdapter(self.tool('herdr'),provider,self.settings.agent_models.get(task,self.settings.model),[str(Path(self.tool(provider)).parent)])
@@ -143,7 +143,7 @@ class Engine:
                 preparation=None
                 if n in LOCAL_TASKS and n not in self.handlers:
                     c=self.store.config(e)
-                    preparation=await self.ask(e,n,'Prepare a brief execution/check plan for the local pipeline step '+n+'. Episode parameters: '+json.dumps({key:c.get(key) for key in ('style','duration_minutes','recording_minutes','resolution','fps','audio_mode')})+'. The application runs the fixed local tools after your response. Do not execute tools, download, render, launch agents, alter files other than the required JSON, change settings or approve anything. Propose checks without claiming they already passed or that you inspected audio/images.',StepPreparation)
+                    preparation=await self.ask(e,n,'Prepare a brief execution/check plan for the local pipeline step '+n+'. The task field MUST equal '+json.dumps(n)+' exactly; it is an identifier, not a description. Episode parameters: '+json.dumps({key:c.get(key) for key in ('style','duration_minutes','recording_minutes','resolution','fps','audio_mode')})+'. The application runs the fixed local tools after your response. Do not execute tools, download, render, launch agents, alter files other than the required JSON, change settings or approve anything. Propose checks without claiming they already passed or that you inspected audio/images.',step_preparation_schema(n))
                     if preparation['result']['task']!=n:raise ValueError('Agent preparation references another step')
                 data=await self.dispatch_with_budget(e,n)
                 if preparation:
@@ -201,7 +201,7 @@ class Engine:
             routing=self.store.task(e,n)['data'];history=list(routing.get('agent_selections',[]))
             history.append({'provider':provider,'time':time.time(),'quota':dict(self.quota.latest.get(provider,{}))})
             self.store.update(e,n,data={**routing,'selected_provider':provider,'agent_selections':history})
-            self.store.log(e,n,'Selected '+provider+' by step priority (verified quota ≥5%)')
+            self.store.log(e,n,'Selected '+provider+' by step priority: '+('unknown Argon quota allowed by policy' if self.quota.latest.get(provider,{}).get('remaining_percent') is None and provider=='antigravity' else 'verified quota ≥5%'))
         def connect_callbacks(adapter):
             if not isinstance(adapter,AntigravityAdapter):return
             def waiting():
@@ -234,7 +234,7 @@ class Engine:
                     data=await operation;break
                 if not self.adapter and provider:
                     remaining=await self.quota.read(provider,self.settings.tools.get('codex') or shutil.which('codex'))
-                    if remaining is not None and remaining>=5:continue
+                    if eligible(provider,remaining):continue
                     # Do not send to a second agent until the first task has verifiably stopped.
                     if operation.done():data=await operation;break
                     identity=self.store.task(e,n)['data'].get('identity')
@@ -296,7 +296,7 @@ class Engine:
             else:
                 spec=await self.ask(e,n,'Inspect the actual images in references/ and read visual_reference.json. Choose scene_type subway_car for an enclosed train interior or enclosed_corridor for a corridor. Select seat_layout transverse for rows of high-backed seats perpendicular to the walls (as in the supplied train reference), or longitudinal for continuous wall benches. Subway geometry includes opaque walls and ceiling, dark framed windows, brown bench seats, rails, hanging rings, fluorescent fixtures and optional seated hooded figure. Unity axes: yaw 0 looks toward +Z; positive yaw looks toward +X. The optional figure sits on the right bench near (1.08, 1.0, 0.7). Keep it in view when included. A verified low diagonal starting camera is (-0.25, 1.13, -3), pitch 2, yaw 43, roll -12, FOV 64. Choose camera position, pitch, yaw, roll and FOV to match the reference composition. Explain limitations honestly; do not describe objects the renderer cannot build. Style: '+c['style'],SceneDesign)
                 (root/'scene_spec.json').write_text(json.dumps(spec['result'],indent=2))
-                result=await Unity(self.tool('unity'),self.tool('ffmpeg')).render(root,c,True)
+                result=await Unity(self.tool('unity'),self.tool('ffmpeg'),self.tool('ffprobe')).render(root,c,True)
                 paths=set(result['artifacts']+['scene_spec.json','visual_reference.json','references.json','preview-frames/frame-00000.png','preview-frames/complete.json'])
                 paths.update(json.loads((root/'references.json').read_text()))
                 checkpoint={'artifacts':result['artifacts'],'checksums':{path:checksum(contained(root,path)) for path in paths}}
@@ -308,11 +308,11 @@ class Engine:
             if not minutes: raise ValueError('Enter recording duration in minutes before recording')
             data=await self.ask(e,n,'Prepare the Unity recording of the approved scene. Read scene_spec.json and unity_preview.json. Return the exact user duration '+str(minutes)+' minutes, fps '+str(c['fps'])+', resolution '+c['resolution']+'. camera must be approved_scene_camera. Explain the setup; do not change the scene, create agents or start recording yourself. The application performs the validated capture after this plan.',RecordingPlan)
             plan=data['result']
-            if (plan['duration_minutes'],plan['fps'],plan['resolution'])!=(minutes,c['fps'],c['resolution']): raise ValueError('Kimi recording plan changed user duration or output settings')
+            if (plan['duration_minutes'],plan['fps'],plan['resolution'])!=(minutes,c['fps'],c['resolution']): raise ValueError('Agent recording plan changed user duration or output settings')
             return data
         if n=='visual_render':
             self.verify_approval(e,'visual_approval')
-            return await Unity(self.tool('unity'),self.tool('ffmpeg')).render(root,c,False)
+            return await Unity(self.tool('unity'),self.tool('ffmpeg'),self.tool('ffprobe')).render(root,c,False)
         if n=='final_assembly':
             self.verify_approval(e,'music_approval'); self.verify_approval(e,'visual_approval')
             out=root/'output'; out.mkdir(exist_ok=True)

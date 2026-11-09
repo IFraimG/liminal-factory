@@ -2,6 +2,11 @@ import asyncio,os,signal,time,uuid
 from contextvars import ContextVar
 from pathlib import Path
 
+class ProcessFailure(RuntimeError):
+    def __init__(self,executable,returncode,detail):
+        self.returncode=returncode;self.executable=str(executable)
+        super().__init__(f'{Path(str(executable)).name} exited {returncode}: {detail}')
+
 PROCESS_OBSERVER=ContextVar('process_observer',default=None)
 
 async def run(args:list[str],cwd=None,timeout=120,log:Path|None=None,sanitize=None,stdout_only=False):
@@ -25,7 +30,7 @@ async def run(args:list[str],cwd=None,timeout=120,log:Path|None=None,sanitize=No
         diagnostics=(output[1] or b'').decode(errors='replace') if stdout_only else text
         if sanitize: diagnostics=sanitize(diagnostics)
         if log: log.write_text(diagnostics)
-        if process.returncode: raise RuntimeError(f'{Path(str(args[0])).name} exited {process.returncode}: {diagnostics[-2500:]}')
+        if process.returncode: raise ProcessFailure(args[0],process.returncode,diagnostics[-2500:])
         if not stdout_only: text=diagnostics
         return text
     finally:
