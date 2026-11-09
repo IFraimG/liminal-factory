@@ -29,6 +29,7 @@ class EpisodeInput(BaseModel):
     permission: bool=False
     duration_minutes: float=Field(default=60,gt=0,le=180)
     recording_minutes: float|None=Field(default=None,gt=0,le=180)
+    channel_review_enabled: bool=True
     postproduction_enabled: bool=True
     presentation_minutes: float|None=Field(default=None,gt=0,le=180)
     presentation_mode: Literal['video','image']='video'
@@ -250,3 +251,41 @@ class ImageEditResult(BaseModel):
     model_config={'extra':'forbid'}
     image_path: str=Field(min_length=1,max_length=300)
     description: str=Field(min_length=10,max_length=3000)
+
+class ChannelTitleCandidate(BaseModel):
+    model_config={'extra':'forbid'}
+    video_id: str=Field(pattern=r'^[A-Za-z0-9_-]{11}$')
+    title: str=Field(min_length=1,max_length=500)
+    reason: str=Field(min_length=3,max_length=1200)
+
+class ChannelMetadataPlan(BaseModel):
+    model_config={'extra':'forbid'}
+    candidates: list[ChannelTitleCandidate]=Field(min_length=1,max_length=5)
+    hashtags: str=Field(min_length=2,max_length=1500)
+    description: str=Field(max_length=5000)
+    @model_validator(mode='after')
+    def validate_plan(self):
+        if len({c.video_id for c in self.candidates})!=len(self.candidates):raise ValueError('Use unique source videos')
+        if len({c.title.casefold() for c in self.candidates})!=len(self.candidates):raise ValueError('Use unique proposed titles')
+        if not re.fullmatch(r'#[\w]+(?:, #[\w]+)*',self.hashtags):raise ValueError('Use one line: #ambient, #darkambient, #coldcore; no spaces inside a hashtag')
+        tags=self.hashtags.split(', ')
+        if len(tags)>20 or len({t.casefold() for t in tags})!=len(tags):raise ValueError('Use at most 20 unique hashtags')
+        return self
+
+class ChannelReviewRequest(BaseModel):
+    model_config={'extra':'forbid'}
+    action: Literal['search','refine']='search'
+    feedback: str=Field(default='',max_length=8000)
+    expected_round_id: str|None=None
+    video_id: str|None=Field(default=None,pattern=r'^[A-Za-z0-9_-]{11}$')
+    @model_validator(mode='after')
+    def valid_feedback(self):
+        self.feedback=self.feedback.strip()
+        if self.action=='refine' and len(self.feedback)<3:raise ValueError('Describe the requested title correction')
+        return self
+
+class ChannelTitleApproval(BaseModel):
+    model_config={'extra':'forbid'}
+    round_id: str
+    expected_round_id: str
+    video_id: str=Field(pattern=r'^[A-Za-z0-9_-]{11}$')

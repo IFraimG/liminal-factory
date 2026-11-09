@@ -8,6 +8,7 @@ from backend.integrations.codex_core import CodexCoreAdapter
 from backend.orchestration.revisions import Revisions
 from backend.orchestration.versions import Versions
 from backend.orchestration.presentation import Presentation
+from backend.orchestration.channel_review import ChannelReview
 from backend.integrations.quota import QuotaRouter,eligible
 from backend.models.schema import MusicBrief,SunoMusicBrief,VisualBrief,Metadata,SceneSpec,SceneDesign,RecordingPlan,StepPreparation,step_preparation_schema
 from backend.integrations.process import checksum,contained,PROCESS_OBSERVER
@@ -30,7 +31,7 @@ class Engine:
     def __init__(self,store,root,settings,adapter=None,handlers=None):
         self.store=store; self.root=Path(root); self.settings=settings; self.adapter=adapter
         self.semaphore=asyncio.Semaphore(settings.max_concurrent_agents); self.running={}; self.wake=asyncio.Event(); self.stopping=False
-        self.handlers=handlers or {}; self.scheduler=None; self._client_session=None; self._kimi_session=None; self.quota=QuotaRouter(self.manual_quota); self.quota_poll_interval=10; self.revisions=Revisions(self); self.presentation=Presentation(self)
+        self.handlers=handlers or {}; self.scheduler=None; self._client_session=None; self._kimi_session=None; self.quota=QuotaRouter(self.manual_quota); self.quota_poll_interval=10; self.revisions=Revisions(self); self.presentation=Presentation(self); self.channel_review=ChannelReview(self)
     def workflow(self,e):return workflow(self.store.config(e))
     def directory(self,e): return contained(self.root,e)
     def tool(self,name):
@@ -207,7 +208,7 @@ class Engine:
         for name,digest in data['checksums'].items():
             if checksum(contained(self.directory(e),name))!=digest: raise ValueError(f'Approved artifact changed: {name}; request changes and approve again')
         return data
-    async def ask(self,e,n,prompt,schema):
+    async def ask(self,e,n,prompt,schema,output_name=None):
         root=self.directory(e); result=f'{n}-{uuid.uuid4().hex}.json'
         def save(identity):
             snapshot={}
@@ -289,8 +290,8 @@ class Engine:
                 for key,value in old.items():
                     if key in checked and key not in allowed:checked[key]=value
                 checked=schema.model_validate(checked).model_dump()
-            (root/f'{n}.json').write_text(json.dumps(checked,indent=2))
-            return {'artifacts':[f'{n}.json'],'result':checked}
+            destination=contained(root,output_name or f'{n}.json');destination.parent.mkdir(parents=True,exist_ok=True);destination.write_text(json.dumps(checked,indent=2))
+            return {'artifacts':[str(destination.relative_to(root))],'result':checked}
         finally:
             if operation and not operation.done():
                 operation.cancel();await asyncio.gather(operation,return_exceptions=True)
@@ -315,6 +316,7 @@ class Engine:
             titles=await channel_titles(c['channel_url'],self.tool('yt-dlp'),self.store,self.settings.cache_hours,self.settings.yt_dlp_use_chrome_cookies,self.settings.yt_dlp_chrome_profile)
             (root/'channel_titles.json').write_text(json.dumps(titles)); return {'artifacts':['channel_titles.json'],'count':len(titles)}
         if n=='metadata':
+            if c.get('channel_review_enabled'):return await self.channel_review.generate(e)
             result=await self.ask(e,n,'Read channel_titles.json, music_brief.json and visual_reference.json. Analyze title patterns and create 5 original titles, recommended title, description and hashtags as #tag, #tag. Do not copy source titles or make performance claims.',Metadata)
             originals=json.loads((root/'channel_titles.json').read_text())
             if any(t.casefold() in {s.casefold() for s in originals} for t in result['result']['titles']): raise ValueError('Generated title duplicates a channel reference')
@@ -357,6 +359,7 @@ class Engine:
             return await Unity(self.tool('unity'),self.tool('ffmpeg'),self.tool('ffprobe')).render(root,c,False)
         if n=='final_assembly':
             self.verify_approval(e,'music_approval'); self.verify_approval(e,'visual_approval')
+            if c.get('channel_review_enabled'):self.verify_approval(e,'metadata_approval')
             out=root/'output'; out.mkdir(exist_ok=True)
             if c.get('postproduction_enabled'):self.verify_approval(e,'image_approval')
             video=root/('extended-visual.mp4' if c.get('postproduction_enabled') else 'visual-recording.mp4' if c.get('recording_minutes') else 'visual-loop.mp4')
@@ -424,6 +427,7 @@ class Engine:
         current_task=self.store.task(e,n)
         if current_task['status']!='Failed' or current_task['data'].get('identity')!=identity or (e,n) in self.running:
             raise ValueError('Task changed during recovery; reload its state')
+        if self.store.config(e).get('channel_review_enabled'):return await self.channel_review.recover(e,path)
         checked=Metadata.model_validate_json(path.read_text()).model_dump()
         originals={s.casefold() for s in json.loads((root/'channel_titles.json').read_text())}
         if any(title.casefold() in originals for title in checked['titles']): raise ValueError('Generated title duplicates a channel reference')
@@ -437,10 +441,11 @@ class Engine:
         if self.store.task(e,n)['status'] not in {'Failed','Cancelled'}: raise ValueError('Only failed/cancelled tasks can be retried')
         if any(self.store.task(e,d)['status'] not in SUCCESS for d in self.workflow(e)[n]): raise ValueError('Complete dependencies first')
         old=self.store.task(e,n)['data']
-        preserved={key:old[key] for key in ('revision_id','revision_agent','revision_fields','feedback','source_image') if key in old}
+        preserved={key:old[key] for key in ('revision_id','revision_agent','revision_fields','feedback','source_image','channel_round_id') if key in old}
         if n=='unity_preview' and old.get('preview_checkpoint'):preserved['preview_checkpoint']=old['preview_checkpoint']
         self.store.update(e,n,'Pending',error='',data=preserved); self.wake.set()
     async def request_changes(self,e,n,reason):
+        if n=='metadata_approval':return await self.channel_review.request_changes(e,reason)
         if n=='image_approval':return await self.presentation.change_image(e,reason)
         if n=='visual_choice':raise ValueError('Choose the source and duration in Extended release')
         if n not in GATES: raise ValueError('Changes require an approval gate')
@@ -467,6 +472,7 @@ class Engine:
         except BaseException:self.store.db.rollback();raise
         self.store.log(e,n,'Requested changes: '+reason); self.wake.set()
     async def approve(self,e,n):
+        if n=='metadata_approval':raise ValueError('Choose a title in Channel titles and hashtags, then approve it')
         if n=='image_approval':return self.presentation.approve_image(e)
         if n=='visual_choice':raise ValueError('Choose the source and duration in Extended release')
         if n not in GATES or self.store.task(e,n)['status']!='Waiting for Approval': raise ValueError('Task is not awaiting approval')

@@ -18,8 +18,14 @@ EXTENDED_DAG={**{k:v for k,v in DAG.items() if k!='final_assembly'},
  'image_approval':['image_edit'],
  'visual_extend':['image_approval'],
  'final_assembly':['audio_engineer','visual_extend','metadata']}
-GATES={'music_approval','visual_approval','visual_choice','image_approval'}
-ALL_TASKS=set(EXTENDED_DAG)
+GATES={'music_approval','visual_approval','visual_choice','image_approval','metadata_approval'}
+ALL_TASKS=set(EXTENDED_DAG)|{'metadata_approval'}
 AGENT_TASKS=ALL_TASKS-GATES
 
-def workflow(config):return EXTENDED_DAG if config.get('postproduction_enabled') else DAG
+def workflow(config):
+    base=EXTENDED_DAG if config.get('postproduction_enabled') else DAG
+    if not config.get('channel_review_enabled'):return base
+    result={name:deps for name,deps in base.items() if name!='final_assembly'}
+    result['metadata_approval']=['metadata']
+    result['final_assembly']=['metadata_approval' if d=='metadata' else d for d in base['final_assembly']]
+    return result

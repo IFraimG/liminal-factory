@@ -292,7 +292,7 @@ async def test_late_metadata_recovers_only_valid_original_result(tmp_path):
     from backend.integrations.process import checksum
     store=Store(tmp_path/'late.db');settings=Settings(working_directory=str(tmp_path/'episodes'),agent_kind='antigravity')
     engine=Engine(store,settings.working_directory,settings);s=ClientFixture(tmp_path);engine._client_session=s
-    eid=engine.create(EpisodeInput(name='Late metadata',audio_url='https://youtu.be/dQw4w9WgXcQ',channel_url='https://youtube.com/@ambient').model_dump())
+    eid=engine.create(EpisodeInput(channel_review_enabled=False,name='Late metadata',audio_url='https://youtu.be/dQw4w9WgXcQ',channel_url='https://youtube.com/@ambient').model_dump())
     root=engine.directory(eid)
     for task,name,data in [('channel_reference','channel_titles.json',['source title']),('music_brief','music_brief.json',{'brief':'Original music'}),('visual_reference','visual_reference.json',{'scene':'corridor'})]:
         (root/name).write_text(json.dumps(data));store.update(eid,task,'Completed',data={'artifacts':[name],'artifact_checksums':{name:checksum(root/name)}})

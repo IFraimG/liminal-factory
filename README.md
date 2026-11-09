@@ -14,7 +14,7 @@
 | Экспорт | WAV заданной длительности; H.264/AAC MP4 с проверками FFprobe и контрольным декодированием |
 | Упаковка | Tauri `.app` со встроенным Python sidecar; конфигурация `.dmg` |
 
-Проверены запуск `.app` на Apple Silicon, создание эпизода через GUI, восстановление после перезапуска, 210 Python-тестов и 31 тест интерфейса, WAV ровно на 3600 секунд и завершённый эпизод с Unity-записью на 180 секунд. Правки финала и сохранение нескольких версий проверены на отдельном тестовом эпизоде; реальный GPT-6.1 Sol Medium вернул валидный план правки. Результаты и ограничения перечислены в [VERIFICATION.md](VERIFICATION.md), план — в [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
+Проверены запуск `.app` на Apple Silicon, создание эпизода через GUI, восстановление после перезапуска, 224 Python-теста и 34 теста интерфейса, WAV ровно на 3600 секунд и завершённый эпизод с Unity-записью на 180 секунд. Правки финала и сохранение нескольких версий проверены на отдельном тестовом эпизоде; реальный GPT-6.1 Sol Medium вернул валидный план правки. Результаты и ограничения перечислены в [VERIFICATION.md](VERIFICATION.md), план — в [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
 
 ## Требования
 
@@ -545,3 +545,21 @@ Existing episodes without these fields continue to work and their saved output/a
 Choosing a visual source at the same duration preserves a running or completed audio task. Changing release duration still requires stopping affected active output tasks and rebuilding audio to the new length. The release form starts with the existing target for extended episodes so a custom initial duration is retained.
 
 Saving Unity capture minutes also leaves independent audio running; it resets only recording/visual consumers and preserves release duration and creative approvals. Agent preparation requests can queue when they share one CLI session, and CLI permission pauses still require the user. Once prepared, local audio processing and Unity work can overlap within the configured concurrency limit.
+
+
+### Channel titles and hashtags: выбор названия с канала
+
+В деталях эпизода откройте **Channel titles and hashtags**. Шаг использует YouTube-канал, указанный при создании эпизода, музыкальный и визуальный брифы и ваши уточнения. YouTube API key не нужен: список опубликованных видео получает yt-dlp с текущими настройками Chrome cookies и кэшем. Новые эпизоды включают этот шаг автоматически; в существующем эпизоде нажмите **Find channel title and hashtags** после завершения анализа канала, музыки и визуального референса.
+
+Агент предлагает до пяти **существующих названий дословно** с объяснением соответствия атмосфере и ссылками **Source video**. Идентификаторы и названия проверяются по полученным данным канала. Для запроса модели выбирается до 150 ещё не показанных видео; если подходящих источников меньше, список будет короче. Хэштеги — рекомендации агента, одна строка через запятую и пробел: `#ambient, #darkambient, #coldcore`. Внутри хэштега пробелов нет; строку можно скопировать кнопкой **Copy**.
+
+Выберите вариант и нажмите **Approve selected title and hashtags**. До этого финальная сборка ждёт **Metadata Approval**. Если варианты не подошли, напишите пожелания в **Title search requirements** и нажмите **Search more channel titles**: уже показанные видео исключаются. **Refine selected title** применяется только по вашему явному запросу и может изменить исходное название; такой вариант помечается как адаптированный, рядом сохраняются оригинал и ссылка.
+
+**Title search and correction history** хранит запросы, варианты, правки и ошибки между перезапусками. Из истории можно выбрать прежний вариант кнопкой **Use this title**. При исчерпании новых источников используйте историю или уточнение выбранного названия. Максимум — 64 раунда в эпизоде. Во время активной работы Metadata или Final Assembly изменения заблокированы; независимые аудио и Unity не блокируют этот шаг.
+
+Поиск и выбор меняют только Metadata, Metadata Approval и Final Assembly. Если итоговое видео уже было готово, оно сохраняется в истории версий перед повторной сборкой. Аудио, сцена, Unity-запись и продлённый видеоряд не пересчитываются. Публикация на YouTube этим шагом не выполняется.
+
+API: `POST /episodes/{id}/channel-review/search` принимает `action` (`search` / `refine`), `feedback`, `expected_round_id` и необязательный `video_id`. `POST /episodes/{id}/channel-review/approve` принимает `round_id`, `expected_round_id`, `video_id`. Текущий раунд и полная история доступны в `channel_review` ответа деталей эпизода. Проверка текущего раунда предотвращает применение устаревшего выбора.
+
+
+Если Client потерял соединение, но CLI позднее сохранил JSON и завершил свой ход, выберите **Metadata** на графе и нажмите **Recover saved result**. Восстановление проверяет тот же процесс CLI, завершение хода, время и размер файла, JSON-схему, неизменность входных артефактов и происхождение названий по данным канала. Новый запрос модели не отправляется. После восстановления выбор названия всё равно требует вашего одобрения.

@@ -9,8 +9,8 @@ import {JSDOM} from 'jsdom';
 const bootstrapDom=new JSDOM('<div></div>');globalThis.window=bootstrapDom.window;globalThis.document=bootstrapDom.window.document;globalThis.navigator=bootstrapDom.window.navigator;
 const {createRoot}=await import('react-dom/client');
 await fs.mkdir('work',{recursive:true});
-await build({stdin:{contents:"export {PipelineGraph,graphLayout} from './src/components/PipelineGraph'; export {AgentPriorityEditor} from './src/components/AgentPriorityEditor'; export {FinalReview} from './src/components/FinalReview'; export {ExtendedRelease} from './src/components/ExtendedRelease'; export {EpisodeIntentFields} from './src/components/EpisodeIntentFields';",resolveDir:process.cwd(),loader:'tsx'},bundle:true,platform:'node',format:'esm',outfile:'work/workflow-test-components.mjs',external:['react','react-dom/client','lucide-react'],plugins:[{name:'test-api',setup(builder){builder.onResolve({filter:/stores\/api$/},()=>({path:'test-api',namespace:'mock'}));builder.onLoad({filter:/.*/,namespace:'mock'},()=>({contents:"export async function api(...args){return globalThis.workflowApi(...args)}; export function media(e,p){return '/episodes/'+e+'/file/'+p}",loader:'js'}));}}]});
-const {PipelineGraph,graphLayout,AgentPriorityEditor,FinalReview,ExtendedRelease,EpisodeIntentFields}=await import(path.resolve('work/workflow-test-components.mjs'));
+await build({stdin:{contents:"export {PipelineGraph,graphLayout} from './src/components/PipelineGraph'; export {AgentPriorityEditor} from './src/components/AgentPriorityEditor'; export {FinalReview} from './src/components/FinalReview'; export {ExtendedRelease} from './src/components/ExtendedRelease'; export {EpisodeIntentFields} from './src/components/EpisodeIntentFields'; export {ChannelMetadataReview} from './src/components/ChannelMetadataReview';",resolveDir:process.cwd(),loader:'tsx'},bundle:true,platform:'node',format:'esm',outfile:'work/workflow-test-components.mjs',external:['react','react-dom/client','lucide-react'],plugins:[{name:'test-api',setup(builder){builder.onResolve({filter:/stores\/api$/},()=>({path:'test-api',namespace:'mock'}));builder.onLoad({filter:/.*/,namespace:'mock'},()=>({contents:"export async function api(...args){return globalThis.workflowApi(...args)}; export function media(e,p){return '/episodes/'+e+'/file/'+p}",loader:'js'}));}}]});
+const {PipelineGraph,graphLayout,AgentPriorityEditor,FinalReview,ExtendedRelease,EpisodeIntentFields,ChannelMetadataReview}=await import(path.resolve('work/workflow-test-components.mjs'));
 const workflow={audio_reference:[],music_brief:['audio_reference'],music_approval:['music_brief'],audio_engineer:['music_approval'],visual_reference:[],unity_preview:['visual_reference'],visual_approval:['unity_preview'],recording_setup:['visual_approval'],visual_render:['recording_setup'],channel_reference:[],metadata:['channel_reference','music_brief','visual_reference'],final_assembly:['audio_engineer','visual_render','metadata']};
 const defaults={status:'Pending',data:{},agent_priorities:['codex','antigravity','kimi'],execution_kind:'agent',priority_locked:false};
 async function mount(component){
@@ -165,4 +165,36 @@ test('initial settings show explicit photo/video pixels and save free-form episo
 test('extended release starts with the current audio target for new episodes',async()=>{
  const view=await mount(React.createElement(ExtendedRelease,{detail:{...releaseDetail,config:{postproduction_enabled:true,duration_minutes:42,recording_minutes:3}},onRefresh:async()=>{}}));
  try{assert.equal(document.querySelector('[aria-label="Release duration (minutes)"]').value,'42')}finally{await view.close()}
+});
+
+const titleCandidate={video_id:'vid00000000',title:'the last empty train',original_title:'the last empty train',source_url:'https://www.youtube.com/watch?v=vid00000000',reason:'Matches the quiet train scene',adapted:false};
+const titleRound={id:'round-1',created:100,status:'Ready',request:{action:'search',feedback:''},error:'',data:{candidates:[titleCandidate],hashtags:'#ambient, #darkambient, #coldcore',description:'A quiet train'}};
+const titleDetail={...finalDetail,config:{channel_url:'https://youtube.com/@ambient'},tasks:['channel_reference','music_brief','visual_reference','metadata'].map(name=>({name,status:'Completed',data:{}})),channel_review:{enabled:true,current_round_id:'round-1',task_status:'Completed',rounds:[titleRound]}};
+test('channel title review asks for approval with exact hashtags and source link',async()=>{
+ const calls=[];globalThis.workflowApi=async(...args)=>{calls.push(args)};
+ const view=await mount(React.createElement(ChannelMetadataReview,{detail:titleDetail,onRefresh:async()=>{}}));
+ try{
+  assert.match(document.body.textContent,/Which title should this video use/);
+  assert.equal(document.querySelector('[aria-label="YouTube hashtags"]').value,'#ambient, #darkambient, #coldcore');
+  assert.equal(document.querySelector('[role=radiogroup] a').href,titleCandidate.source_url);
+  assert.equal(calls.length,0);await act(()=>button('Approve selected title and hashtags').click());
+  assert.deepEqual(calls,[['/episodes/episode-a/channel-review/approve','POST',{round_id:'round-1',expected_round_id:'round-1',video_id:'vid00000000'}]]);
+ }finally{await view.close()}
+});
+test('search more and title corrections retain round identity and user requirements',async()=>{
+ const calls=[];globalThis.workflowApi=async(...args)=>{calls.push(args)};
+ const view=await mount(React.createElement(ChannelMetadataReview,{detail:titleDetail,onRefresh:async()=>{}}));
+ try{
+  const input=document.querySelector('[aria-label="Title search requirements"]');
+  await act(()=>{Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set.call(input,'Add a colder atmosphere');input.dispatchEvent(new window.Event('input',{bubbles:true}));});
+  await act(()=>button('Refine selected title').click());
+  assert.deepEqual(calls[0],['/episodes/episode-a/channel-review/search','POST',{action:'refine',feedback:'Add a colder atmosphere',expected_round_id:'round-1',video_id:'vid00000000'}]);
+  await act(()=>button('Search more channel titles').click());assert.equal(calls[1][2].action,'search');assert.equal(calls[1][2].expected_round_id,'round-1');
+  assert.match(document.body.textContent,/Title search and correction history/);
+ }finally{await view.close()}
+});
+test('active metadata work locks search and approval controls without locking audio',async()=>{
+ const detail={...titleDetail,tasks:[...titleDetail.tasks.filter(t=>t.name!=='metadata'),{name:'metadata',status:'Waiting for Permission',data:{}}]};
+ const view=await mount(React.createElement(ChannelMetadataReview,{detail,onRefresh:async()=>{}}));
+ try{assert(button('Search more channel titles').disabled);assert(button('Approve selected title and hashtags').disabled)}finally{await view.close()}
 });
