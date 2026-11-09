@@ -21,7 +21,8 @@ def conversation(row):
             messages.append({'id':row['id']+'-legacy-question','role':'assistant','kind':'question','content':plan.get('clarification') or row.get('error',''),'created':row['created']})
     return messages
 
-def impact(plan,requested_scope='auto'):
+def impact(plan,requested_scope='auto',dag=None):
+    dag=dag or DAG
     scopes={change['scope'] for change in plan['changes']}
     if requested_scope!='auto' and scopes!={requested_scope}:raise ValueError('The agent selected changes outside your chosen scope')
     patch={key:value for key,value in plan['config_updates'].items() if value is not None}
@@ -32,10 +33,10 @@ def impact(plan,requested_scope='auto'):
     for change in plan['changes']:
         if set(change.get('allowed_fields',[]))-field_sets[change['scope']]:raise ValueError('Unsupported field constraint for '+change['scope'])
     roots={SOURCES[scope] for scope in scopes}
-    if 'recording_minutes' in patch:roots.add('audio_engineer')
+    if 'recording_minutes' in patch and 'visual_choice' not in dag:roots.add('audio_engineer')
     affected=set(roots)
     while True:
-        extra={name for name,deps in DAG.items() if set(deps)&affected}-affected
+        extra={name for name,deps in dag.items() if set(deps)&affected}-affected
         if not extra:break
         affected|=extra
     return roots,affected,patch
@@ -139,7 +140,7 @@ class Revisions:
             if adapter and identity:await adapter.cancel(identity)
     async def apply(self,identifier,plan):
         engine=self.engine;store=engine.store;row=self.get(identifier);e=row['episode'];root=engine.directory(e)
-        roots,affected,patch=impact(plan,row['scope']);self.applying.add(e);self.update(identifier,'Applying')
+        roots,affected,patch=impact(plan,row['scope'],engine.workflow(e));self.applying.add(e);self.update(identifier,'Applying')
         try:
             if store.task(e,'final_assembly')['status']!='Completed' or checksum(root/'output/final.mp4')!=row['data']['base_final_sha256']:raise ValueError('The current final changed during analysis. Submit the request again against the latest version.')
             # Claim the episode for the short snapshot/reset phase. Independent running tasks are untouched.
@@ -151,7 +152,7 @@ class Revisions:
                 await snapshot
                 raise
             config=store.config(e);config.update(patch)
-            if 'recording_minutes' in patch:config['duration_minutes']=patch['recording_minutes']
+            if 'recording_minutes' in patch and not config.get('postproduction_enabled'):config['duration_minutes']=patch['recording_minutes']
             context={'provider':row['provider'],'model':row['model'],'effort':row['effort'] or 'medium'}
             feedback={};fields={}
             for change in plan['changes']:
@@ -160,7 +161,7 @@ class Revisions:
             messages=conversation(row)
             if any(message.get('reply_to') for message in messages):
                 for name in feedback:feedback[name]+='\nClarification context (apply only this step-specific instruction and allowed fields): '+json.dumps(messages,ensure_ascii=False)
-            data={**row['data'],'plan':plan,'affected':[name for name in DAG if name in affected],'roots':[name for name in DAG if name in roots],'previous_version':version['id'] if version else None}
+            data={**row['data'],'plan':plan,'affected':[name for name in engine.workflow(e) if name in affected],'roots':[name for name in engine.workflow(e) if name in roots],'previous_version':version['id'] if version else None}
             try:
                 store.db.execute('BEGIN IMMEDIATE')
                 Versions(store,engine.root).insert(version)

@@ -49,6 +49,10 @@ async def process_audio(inputs:list[Path],out:Path,seconds:float,mode='Seamless 
             while remaining>0:
                 chunk=src.read(min(65536,remaining),always_2d=True); dst.write(chunk); remaining-=len(chunk)
             dst.write(mixed)
+    variation=None
+    if mode=='Variational Extend':
+        from backend.audio.variation import vary
+        extended=out.parent/'variational-source.wav';variation=await vary(cycle,extended,seconds,ffmpeg);cycle=extended
     evolution="volume='0.9875+0.0125*cos(2*PI*t/125)':eval=frame," if mode=='Ambient Evolution' else ''
     filters=evolution+'loudnorm=I=-18:TP=-1.5:LRA=11'
     measurement=await run([ffmpeg,'-hide_banner','-stream_loop','-1','-i',str(cycle),'-t',str(seconds),'-af',filters+':print_format=json','-f','null','-'],timeout=max(180,seconds*2))
@@ -70,5 +74,5 @@ async def process_audio(inputs:list[Path],out:Path,seconds:float,mode='Seamless 
     verification=await run([ffmpeg,'-hide_banner','-i',str(out),'-af','loudnorm=I=-18:TP=-1.5:LRA=11:print_format=json','-f','null','-'],timeout=max(180,seconds*2))
     final_stats=json.loads(re.findall(r'\{\s*"input_i".*?\}',verification,re.S)[-1])
     if float(final_stats['input_tp']) > -1.0: raise RuntimeError('True peak exceeded safety ceiling')
-    report={'gain_db':gain_db,'fade_seconds':fade_out,'mode':mode,'duration':frames/48000,'sample_peak':peak,'true_peak_dbtp':float(final_stats['input_tp']),'integrated_lufs':float(final_stats['input_i']),'crossfade_seconds':fade/48000,'trim_samples':[start,end],'measurement':stats,'inputs':[p.name for p in inputs]}
+    report={'variation':variation,'gain_db':gain_db,'fade_seconds':fade_out,'mode':mode,'duration':frames/48000,'sample_peak':peak,'true_peak_dbtp':float(final_stats['input_tp']),'integrated_lufs':float(final_stats['input_i']),'crossfade_seconds':fade/48000,'trim_samples':[start,end],'measurement':stats,'inputs':[p.name for p in inputs]}
     out.with_suffix('.report.json').write_text(json.dumps(report,indent=2)); return report

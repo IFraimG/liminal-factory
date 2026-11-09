@@ -1,9 +1,9 @@
 """Per-episode agent order, separate from transient task results."""
-from backend.orchestration.workflow import DAG,GATES
+from backend.orchestration.workflow import ALL_TASKS,GATES
 
 PROVIDERS=('codex','antigravity','kimi')
-AI_TASKS={'music_brief','visual_reference','unity_preview','metadata','recording_setup'}
-LOCAL_TASKS=set(DAG)-GATES-AI_TASKS
+AI_TASKS={'music_brief','visual_reference','unity_preview','metadata','recording_setup','image_edit'}
+LOCAL_TASKS=ALL_TASKS-GATES-AI_TASKS
 ACTIVE_STATUSES={'Running','Waiting for Client','Waiting for CLI','Waiting for Permission','Waiting for quota'}
 
 def validate_order(order):
@@ -12,7 +12,7 @@ def validate_order(order):
     return list(order)
 
 def default_order(provider,task):
-    first='antigravity' if provider=='gemini' else provider
+    first='antigravity' if provider=='gemini' or task=='image_edit' else provider
     order=[first,*[p for p in PROVIDERS if p!=first]]
     if order.index('antigravity')>order.index('kimi'):
         order.remove('antigravity');order.insert(order.index('kimi'),'antigravity')

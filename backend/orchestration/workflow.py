@@ -12,5 +12,14 @@ DAG={
  'metadata': ['channel_reference','music_brief','visual_reference'],
  'final_assembly': ['audio_engineer','visual_render','metadata'],
 }
-GATES={'music_approval','visual_approval'}
-AGENT_TASKS=set(DAG)-GATES
+EXTENDED_DAG={**{k:v for k,v in DAG.items() if k!='final_assembly'},
+ 'visual_choice':['visual_render'],
+ 'image_edit':['visual_choice'],
+ 'image_approval':['image_edit'],
+ 'visual_extend':['image_approval'],
+ 'final_assembly':['audio_engineer','visual_extend','metadata']}
+GATES={'music_approval','visual_approval','visual_choice','image_approval'}
+ALL_TASKS=set(EXTENDED_DAG)
+AGENT_TASKS=ALL_TASKS-GATES
+
+def workflow(config):return EXTENDED_DAG if config.get('postproduction_enabled') else DAG

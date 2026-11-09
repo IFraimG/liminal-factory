@@ -5,7 +5,7 @@ from fastapi import FastAPI,Request,HTTPException
 from fastapi.responses import FileResponse,StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
-from backend.models.schema import EpisodeInput,Settings,MusicBrief,RevisionInput,RevisionReply
+from backend.models.schema import EpisodeInput,Settings,MusicBrief,RevisionInput,RevisionReply,PresentationInput
 from backend.storage.db import Store
 from backend.orchestration.engine import Engine,PriorityLockedError
 from backend.orchestration.versions import Versions
@@ -150,7 +150,7 @@ async def create(config:EpisodeInput): return {'id':engine.create(config.model_d
 @app.get('/episodes/{e}')
 async def detail(e:str):
     config=store.config(e); root=engine.directory(e)
-    tasks=[store.task(e,n) for n in DAG]
+    tasks=[store.task(e,n) for n in engine.workflow(e)]
     for task in tasks:
         name=task['name'];task['agent_priorities']=[] if name in GATES else order_for(config,engine.settings.agent_kind,name)
         task['priority_locked']=engine.priorities_locked(e,name)
@@ -165,7 +165,7 @@ async def detail(e:str):
     names=json.loads(manifest.read_text()) if manifest.exists() else []
     for path in names:
         if contained(root,path).is_file(): refs.append(path)
-    return {'id':e,'config':config,'tasks':tasks,'logs':store.rows('SELECT * FROM logs WHERE episode=? ORDER BY id DESC LIMIT 300',(e,)),'artifacts':artifacts,'references':refs,'music':[str(p.relative_to(root)) for p in sorted((root/'music').glob('*'))],'workflow':DAG,'versions':Versions(store,engine.root).list(e),'revisions':engine.revisions.rows(e),'final_current':store.task(e,'final_assembly')['status']=='Completed'}
+    return {'id':e,'config':config,'tasks':tasks,'logs':store.rows('SELECT * FROM logs WHERE episode=? ORDER BY id DESC LIMIT 300',(e,)),'artifacts':artifacts,'references':refs,'music':[str(p.relative_to(root)) for p in sorted((root/'music').glob('*'))],'workflow':engine.workflow(e), 'presentation':engine.presentation.state(e),'versions':Versions(store,engine.root).list(e),'revisions':engine.revisions.rows(e),'final_current':store.task(e,'final_assembly')['status']=='Completed'}
 
 @app.post('/episodes/{e}/revisions')
 async def request_revision(e:str,request:RevisionInput):return {'id':engine.revisions.create(e,request)}
@@ -177,6 +177,10 @@ async def cancel_revision(e:str,revision:str):
 @app.post('/episodes/{e}/revisions/{revision}/reply')
 async def reply_revision(e:str,revision:str,request:RevisionReply):
     return {'id':await engine.revisions.reply(e,revision,request)}
+
+@app.post('/episodes/{e}/presentation')
+async def choose_presentation(e:str,request:PresentationInput):
+    await engine.presentation.choose(e,request);return {'ok':True}
 
 @app.put('/episodes/{e}/recording')
 async def recording_duration(e:str,request:Request):

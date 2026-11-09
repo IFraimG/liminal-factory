@@ -29,6 +29,9 @@ class EpisodeInput(BaseModel):
     permission: bool=False
     duration_minutes: float=Field(default=60,gt=0,le=180)
     recording_minutes: float|None=Field(default=None,gt=0,le=180)
+    postproduction_enabled: bool=True
+    presentation_minutes: float|None=Field(default=None,gt=0,le=180)
+    presentation_mode: Literal['video','image']='video'
     resolution: str='1080p'
     fps: int=24
     audio_mode: str='Seamless Loop'
@@ -42,8 +45,8 @@ class EpisodeInput(BaseModel):
     @classmethod
     def priorities(cls,value):
         from backend.orchestration.priorities import validate_order
-        from backend.orchestration.workflow import DAG,GATES
-        if set(value)-(set(DAG)-GATES):raise ValueError('Agent priority requires an executable pipeline step')
+        from backend.orchestration.workflow import ALL_TASKS,GATES
+        if set(value)-(ALL_TASKS-GATES):raise ValueError('Agent priority requires an executable pipeline step')
         return {name:validate_order(order) for name,order in value.items()}
     @field_validator('audio_url')
     @classmethod
@@ -54,7 +57,7 @@ class EpisodeInput(BaseModel):
     @model_validator(mode='after')
     def choices(self):
         if self.resolution not in {'1080p','1440p','4K'} or self.fps not in {24,30,60}: raise ValueError('Unsupported output settings')
-        if self.audio_mode not in {'Seamless Loop','Ambient Evolution','Multi-track'}: raise ValueError('Unsupported audio mode')
+        if self.audio_mode not in {'Seamless Loop','Ambient Evolution','Multi-track','Variational Extend'}: raise ValueError('Unsupported audio mode')
         if self.style not in {'Liminal Space','Dreamcore','Coldcore','Surreal Ambient'}: raise ValueError('Unsupported style')
         return self
 
@@ -185,7 +188,7 @@ class RevisionConfig(BaseModel):
     resolution: Literal['1080p','1440p','4K']|None=None
     fps: Literal[24,30,60]|None=None
     recording_minutes: float|None=Field(default=None,gt=0,le=180)
-    audio_mode: Literal['Seamless Loop','Ambient Evolution','Multi-track']|None=None
+    audio_mode: Literal['Seamless Loop','Ambient Evolution','Multi-track','Variational Extend']|None=None
     audio_gain_db: float|None=Field(default=None,ge=-24,le=12)
     audio_fade_seconds: float|None=Field(default=None,ge=0,le=30)
 class RevisionChange(BaseModel):
@@ -226,3 +229,19 @@ class RevisionReply(BaseModel):
         value=value.strip()
         if not value:raise ValueError('Enter an answer')
         return value
+
+
+class PresentationInput(BaseModel):
+    mode: Literal['video','image']='video'
+    minutes: float=Field(default=60,gt=0,le=180)
+    prompt: str=Field(default='',max_length=8000)
+    @model_validator(mode='after')
+    def needs_prompt(self):
+        self.prompt=self.prompt.strip()
+        if self.mode=='image' and len(self.prompt)<3:raise ValueError('Describe the requested image edit')
+        return self
+
+class ImageEditResult(BaseModel):
+    model_config={'extra':'forbid'}
+    image_path: str=Field(min_length=1,max_length=300)
+    description: str=Field(min_length=10,max_length=3000)

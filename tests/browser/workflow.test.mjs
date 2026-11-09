@@ -9,8 +9,8 @@ import {JSDOM} from 'jsdom';
 const bootstrapDom=new JSDOM('<div></div>');globalThis.window=bootstrapDom.window;globalThis.document=bootstrapDom.window.document;globalThis.navigator=bootstrapDom.window.navigator;
 const {createRoot}=await import('react-dom/client');
 await fs.mkdir('work',{recursive:true});
-await build({stdin:{contents:"export {PipelineGraph,graphLayout} from './src/components/PipelineGraph'; export {AgentPriorityEditor} from './src/components/AgentPriorityEditor'; export {FinalReview} from './src/components/FinalReview';",resolveDir:process.cwd(),loader:'tsx'},bundle:true,platform:'node',format:'esm',outfile:'work/workflow-test-components.mjs',external:['react','react-dom/client','lucide-react'],plugins:[{name:'test-api',setup(builder){builder.onResolve({filter:/stores\/api$/},()=>({path:'test-api',namespace:'mock'}));builder.onLoad({filter:/.*/,namespace:'mock'},()=>({contents:"export async function api(...args){return globalThis.workflowApi(...args)}; export function media(e,p){return '/episodes/'+e+'/file/'+p}",loader:'js'}));}}]});
-const {PipelineGraph,graphLayout,AgentPriorityEditor,FinalReview}=await import(path.resolve('work/workflow-test-components.mjs'));
+await build({stdin:{contents:"export {PipelineGraph,graphLayout} from './src/components/PipelineGraph'; export {AgentPriorityEditor} from './src/components/AgentPriorityEditor'; export {FinalReview} from './src/components/FinalReview'; export {ExtendedRelease} from './src/components/ExtendedRelease';",resolveDir:process.cwd(),loader:'tsx'},bundle:true,platform:'node',format:'esm',outfile:'work/workflow-test-components.mjs',external:['react','react-dom/client','lucide-react'],plugins:[{name:'test-api',setup(builder){builder.onResolve({filter:/stores\/api$/},()=>({path:'test-api',namespace:'mock'}));builder.onLoad({filter:/.*/,namespace:'mock'},()=>({contents:"export async function api(...args){return globalThis.workflowApi(...args)}; export function media(e,p){return '/episodes/'+e+'/file/'+p}",loader:'js'}));}}]});
+const {PipelineGraph,graphLayout,AgentPriorityEditor,FinalReview,ExtendedRelease}=await import(path.resolve('work/workflow-test-components.mjs'));
 const workflow={audio_reference:[],music_brief:['audio_reference'],music_approval:['music_brief'],audio_engineer:['music_approval'],visual_reference:[],unity_preview:['visual_reference'],visual_approval:['unity_preview'],recording_setup:['visual_approval'],visual_render:['recording_setup'],channel_reference:[],metadata:['channel_reference','music_brief','visual_reference'],final_assembly:['audio_engineer','visual_render','metadata']};
 const defaults={status:'Pending',data:{},agent_priorities:['codex','antigravity','kimi'],execution_kind:'agent',priority_locked:false};
 async function mount(component){
@@ -122,4 +122,28 @@ test('failed reply preserves the draft and displays the rejection',async()=>{
 test('conversation stays visible without an answer form while the agent is running',async()=>{
  const view=await mount(React.createElement(FinalReview,{detail:{...finalDetail,revisions:[{...clarificationRow,status:'Planning'}]},onRefresh:async()=>{}}));
  try{assert(document.querySelector('[role=log]'));assert.equal(document.querySelector('.revision-reply'),null);assert(button('Request revision').disabled)}finally{await view.close()}
+});
+
+const releaseDetail={...finalDetail,config:{recording_minutes:3},presentation:{enabled:false},tasks:[{name:'visual_render',status:'Completed',data:{}}]};
+test('extended release defaults to one hour and keeps the Unity capture separate',async()=>{
+ const calls=[];globalThis.workflowApi=async(...args)=>{calls.push(args)};
+ const view=await mount(React.createElement(ExtendedRelease,{detail:releaseDetail,onRefresh:async()=>{}}));
+ try{
+  assert.equal(document.querySelector('[aria-label="Release duration (minutes)"]').value,'60');
+  assert.match(document.querySelector('video').src,/visual-recording.mp4/);
+  await act(()=>document.querySelector('form').dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true})));
+  assert.deepEqual(calls,[['/episodes/episode-a/presentation','POST',{minutes:60,mode:'video',prompt:''}]]);
+ }finally{await view.close()}
+});
+test('image path requests an edit and shows approval and iteration history',async()=>{
+ const calls=[];globalThis.workflowApi=async(...args)=>{calls.push(args)};
+ const detail={...releaseDetail,config:{...releaseDetail.config,presentation_mode:'image',presentation_minutes:60},tasks:[...releaseDetail.tasks,{name:'audio_engineer',status:'Running',data:{}},{name:'image_edit',status:'Completed',data:{image:'image-edits/one/edited.png'}},{name:'image_approval',status:'Waiting for Approval',data:{}}],presentation:{enabled:true,image_history:[{image:'image-edits/one/edited.png',prompt:'More realistic lighting',description:'Edited lighting',created:1}]}};
+ const view=await mount(React.createElement(ExtendedRelease,{detail,onRefresh:async()=>{}}));
+ try{
+  assert.equal(document.querySelector('[aria-label="Visual source"]').value,'image');assert(document.querySelector('img'));
+  assert.match(document.body.textContent,/Image edit history/);
+  assert.equal(button('Approve image and extend video').disabled,false);
+  await act(()=>button('Approve image and extend video').click());
+  assert.deepEqual(calls,[['/episodes/episode-a/tasks/image_approval/approve','POST']]);
+ }finally{await view.close()}
 });

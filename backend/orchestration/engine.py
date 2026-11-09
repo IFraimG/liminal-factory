@@ -1,12 +1,13 @@
 import asyncio,json,uuid,time,shutil
 from pathlib import Path
-from backend.orchestration.workflow import DAG,GATES,AGENT_TASKS
+from backend.orchestration.workflow import DAG,GATES,AGENT_TASKS,workflow
 from backend.orchestration.herdr_adapter import HerdrAdapter
 from backend.integrations.antigravity import AntigravitySession,AntigravityAdapter
 from backend.integrations.kimi import KimiSession
 from backend.integrations.codex_core import CodexCoreAdapter
 from backend.orchestration.revisions import Revisions
 from backend.orchestration.versions import Versions
+from backend.orchestration.presentation import Presentation
 from backend.integrations.quota import QuotaRouter,eligible
 from backend.models.schema import MusicBrief,SunoMusicBrief,VisualBrief,Metadata,SceneSpec,SceneDesign,RecordingPlan,StepPreparation,step_preparation_schema
 from backend.integrations.process import checksum,contained,PROCESS_OBSERVER
@@ -27,7 +28,8 @@ class Engine:
     def __init__(self,store,root,settings,adapter=None,handlers=None):
         self.store=store; self.root=Path(root); self.settings=settings; self.adapter=adapter
         self.semaphore=asyncio.Semaphore(settings.max_concurrent_agents); self.running={}; self.wake=asyncio.Event(); self.stopping=False
-        self.handlers=handlers or {}; self.scheduler=None; self._client_session=None; self._kimi_session=None; self.quota=QuotaRouter(self.manual_quota); self.quota_poll_interval=10; self.revisions=Revisions(self)
+        self.handlers=handlers or {}; self.scheduler=None; self._client_session=None; self._kimi_session=None; self.quota=QuotaRouter(self.manual_quota); self.quota_poll_interval=10; self.revisions=Revisions(self); self.presentation=Presentation(self)
+    def workflow(self,e):return workflow(self.store.config(e))
     def directory(self,e): return contained(self.root,e)
     def tool(self,name):
         value=self.settings.tools.get(name) or shutil.which(name)
@@ -63,7 +65,7 @@ class Engine:
     def priorities_locked(self,e,n):
         return (e,n) in self.running or self.store.task(e,n)['status'] in ACTIVE_STATUSES
     def set_priorities(self,e,n,order):
-        if n not in DAG or n in GATES:raise ValueError('Choose an executable step; approval belongs to you')
+        if n not in self.workflow(e) or n in GATES:raise ValueError('Choose an executable step; approval belongs to you')
         order=validate_order(order);config=self.store.config(e)
         if self.priorities_locked(e,n):raise PriorityLockedError('Stop the active step before changing its agent priorities')
         config['agent_priorities']={**config.get('agent_priorities',{}),n:order}
@@ -84,7 +86,7 @@ class Engine:
     def create(self,config):
         e=uuid.uuid4().hex; self.directory(e).mkdir(parents=True)
         self.store.execute('INSERT INTO episodes VALUES(?,?,?)',(e,json.dumps(config),time.time()))
-        for n in DAG: self.store.execute('INSERT INTO tasks(episode,name) VALUES(?,?)',(e,n))
+        for n in workflow(config): self.store.execute('INSERT INTO tasks(episode,name) VALUES(?,?)',(e,n))
         self.store.log(e,'system','Episode created. Import visual references, then Start Production.'); return e
     async def start(self,e):
         config=self.store.config(e)
@@ -100,7 +102,7 @@ class Engine:
     def enabled(self,e): return bool(self.store.rows('SELECT key FROM cache WHERE key=?',('started:'+e,)))
     async def recover(self):
         for row in self.store.rows('SELECT id FROM episodes'):
-            for name in DAG:self.store.execute('INSERT OR IGNORE INTO tasks(episode,name) VALUES(?,?)',(row['id'],name))
+            for name in self.workflow(row['id']):self.store.execute('INSERT OR IGNORE INTO tasks(episode,name) VALUES(?,?)',(row['id'],name))
         for row in self.store.rows("SELECT id FROM revisions WHERE status IN ('Planning','Waiting for quota','Waiting for CLI','Waiting for Permission','Applying')"):
             identity=self.revisions.get(row['id'])['data'].get('identity')
             if identity and identity.get('transport')=='herdr-core-codex-exec':
@@ -133,10 +135,11 @@ class Engine:
             for episode in self.store.rows('SELECT id FROM episodes'):
                 e=episode['id']
                 if not self.enabled(e) or e in self.revisions.applying: continue
-                for n,deps in DAG.items():
+                for n,deps in self.workflow(e).items():
                     key=(e,n); t=self.store.task(e,n)
                     if key in self.running or t['status']!='Pending': continue
                     if not all(self.store.task(e,d)['status'] in SUCCESS for d in deps): continue
+                    if n=='audio_engineer' and self.store.config(e).get('postproduction_enabled') and (not self.store.config(e).get('presentation_minutes') or self.store.task(e,'visual_choice')['status']!='Approved'):continue
                     if n=='recording_setup' and not self.store.config(e).get('recording_minutes'): continue
                     if n in GATES:
                         self.store.update(e,n,'Waiting for Approval'); self.store.log(e,n,'User approval required'); continue
@@ -154,7 +157,7 @@ class Engine:
                 data=self.store.task(e,n)['data']; self.store.update(e,n,data={**data,'process':info})
             context=PROCESS_OBSERVER.set(observe)
             try:
-                for dependency in DAG[n]: self.verify_artifacts(e,dependency)
+                for dependency in self.workflow(e)[n]: self.verify_artifacts(e,dependency)
                 preparation=None
                 if n in LOCAL_TASKS and n not in self.handlers:
                     c=self.store.config(e)
@@ -205,7 +208,7 @@ class Engine:
         root=self.directory(e); result=f'{n}-{uuid.uuid4().hex}.json'
         def save(identity):
             snapshot={}
-            for dependency in DAG[n]:
+            for dependency in self.workflow(e)[n]:
                 for path in self.store.task(e,dependency)['data'].get('artifacts',[]): snapshot[path]=checksum(contained(root,path))
             identity={**identity,'input_checksums':snapshot,'result_schema':schema.__name__}
             data=self.store.task(e,n)['data']; self.store.update(e,n,data={**data,'identity':identity})
@@ -296,6 +299,7 @@ class Engine:
                 await adapter.cancel(identity)
     async def dispatch(self,e,n):
         if n in self.handlers: return await self.handlers[n](e,n)
+        if n in {'image_edit','visual_extend'}:return await self.presentation.dispatch(e,n)
         c=self.store.config(e); root=self.directory(e)
         if n=='audio_reference': return await analyze(root,c,self.tool,self.settings.yt_dlp_use_chrome_cookies,self.settings.yt_dlp_chrome_profile)
         if n=='music_brief':
@@ -350,7 +354,9 @@ class Engine:
         if n=='final_assembly':
             self.verify_approval(e,'music_approval'); self.verify_approval(e,'visual_approval')
             out=root/'output'; out.mkdir(exist_ok=True)
-            await assemble(root/'final.wav',root/('visual-recording.mp4' if c.get('recording_minutes') else 'visual-loop.mp4'),out/'final.mp4',c,self.tool('ffmpeg'),self.tool('ffprobe'))
+            if c.get('postproduction_enabled'):self.verify_approval(e,'image_approval')
+            video=root/('extended-visual.mp4' if c.get('postproduction_enabled') else 'visual-recording.mp4' if c.get('recording_minutes') else 'visual-loop.mp4')
+            await assemble(root/'final.wav',video,out/'final.mp4',c,self.tool('ffmpeg'),self.tool('ffprobe'))
             shutil.copy2(root/'metadata.json',out/'metadata.json')
             if c.get('output_directory'):
                 revision_id=self.store.task(e,n)['data'].get('revision_id')
@@ -366,15 +372,18 @@ class Engine:
         version=Versions(self.store,self.root).archive(e,{'recording_setup','visual_render','audio_engineer','final_assembly'})
         if version:
             Versions(self.store,self.root).insert(version);self.store.db.commit()
-        config.update(recording_minutes=minutes,duration_minutes=minutes)
+        config['recording_minutes']=minutes
+        if not config.get('postproduction_enabled'):config['duration_minutes']=minutes
         self.store.execute('UPDATE episodes SET config=? WHERE id=?',(json.dumps(config),e))
-        for name in ('recording_setup','visual_render','audio_engineer','final_assembly'):
+        affected={'recording_setup','visual_render','final_assembly'}
+        affected.update({'visual_choice','image_edit','image_approval','visual_extend'} if config.get('postproduction_enabled') else {'audio_engineer'})
+        for name in affected:
             self.store.execute('INSERT OR IGNORE INTO tasks(episode,name) VALUES(?,?)',(e,name))
             self.store.update(e,name,'Pending',error='',data={})
         self.store.log(e,'recording_setup',f'User set Unity recording duration to {minutes} minutes; Kimi will prepare the approved camera capture.')
         self.wake.set()
     async def cancel(self,e,n):
-        if n not in DAG: raise ValueError('Unknown task')
+        if n not in self.workflow(e): raise ValueError('Unknown task')
         task=self.running.get((e,n))
         if task:
             task.cancel()
@@ -402,7 +411,7 @@ class Engine:
         if any(fp[k]!=identity.get(k if k!='address' else 'pane') for k in fp): raise ValueError('Original CLI process cannot be verified; inspect the saved result manually')
         if session.word(terminal) not in {'idle','done'}: raise ValueError('Wait for the original CLI turn to finish before recovering its result')
         if 'before_turn' in identity and terminal.get('turn',0)<=identity['before_turn']: raise ValueError('Original CLI turn has not completed')
-        for dependency in DAG[n]:
+        for dependency in self.workflow(e)[n]:
             if self.store.task(e,dependency)['status'] not in SUCCESS: raise ValueError('Complete dependencies before recovery')
             self.verify_artifacts(e,dependency)
         for filename,digest in identity.get('input_checksums',{}).items():
@@ -419,14 +428,16 @@ class Engine:
         self.store.log(e,n,'Recovered late structured result after schema, original CLI and dependency validation. No new model prompt was sent.')
         self.wake.set();return {'recovered':True}
     async def retry(self,e,n):
-        if n not in DAG: raise ValueError('Unknown task')
+        if n not in self.workflow(e): raise ValueError('Unknown task')
         if self.store.task(e,n)['status'] not in {'Failed','Cancelled'}: raise ValueError('Only failed/cancelled tasks can be retried')
-        if any(self.store.task(e,d)['status'] not in SUCCESS for d in DAG[n]): raise ValueError('Complete dependencies first')
+        if any(self.store.task(e,d)['status'] not in SUCCESS for d in self.workflow(e)[n]): raise ValueError('Complete dependencies first')
         old=self.store.task(e,n)['data']
-        preserved={key:old[key] for key in ('revision_id','revision_agent','revision_fields','feedback') if key in old}
+        preserved={key:old[key] for key in ('revision_id','revision_agent','revision_fields','feedback','source_image') if key in old}
         if n=='unity_preview' and old.get('preview_checkpoint'):preserved['preview_checkpoint']=old['preview_checkpoint']
         self.store.update(e,n,'Pending',error='',data=preserved); self.wake.set()
     async def request_changes(self,e,n,reason):
+        if n=='image_approval':return await self.presentation.change_image(e,reason)
+        if n=='visual_choice':raise ValueError('Choose the source and duration in Extended release')
         if n not in GATES: raise ValueError('Changes require an approval gate')
         reason=reason.strip()
         if len(reason)<3 or len(reason)>8000: raise ValueError('Describe the requested changes in 3–8000 characters')
@@ -434,7 +445,7 @@ class Engine:
         source='music_brief' if n=='music_approval' else 'unity_preview'
         affected={source,n}; changed=True
         while changed:
-            new={task for task,deps in DAG.items() if any(d in affected for d in deps)}-affected
+            new={task for task,deps in self.workflow(e).items() if any(d in affected for d in deps)}-affected
             changed=bool(new); affected|=new
         for task in affected:
             if (e,task) in self.running:await self.cancel(e,task)
@@ -451,6 +462,8 @@ class Engine:
         except BaseException:self.store.db.rollback();raise
         self.store.log(e,n,'Requested changes: '+reason); self.wake.set()
     async def approve(self,e,n):
+        if n=='image_approval':return self.presentation.approve_image(e)
+        if n=='visual_choice':raise ValueError('Choose the source and duration in Extended release')
         if n not in GATES or self.store.task(e,n)['status']!='Waiting for Approval': raise ValueError('Task is not awaiting approval')
         root=self.directory(e)
         if n=='music_approval':
