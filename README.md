@@ -519,3 +519,9 @@ Existing completed episodes retain their original task graph and final until you
 API: `POST /episodes/{episode}/presentation` with `{"mode":"video","minutes":60,"prompt":""}` or `{"mode":"image","minutes":60,"prompt":"Describe the image changes"}`. Image review uses the existing `tasks/image_approval/changes` and `tasks/image_approval/approve` routes. Episode detail returns the effective graph and persistent `presentation.image_history`.
 
 Media transitions and pitch-preserving tempo filtering use the standard [FFmpeg filters](https://ffmpeg.org/ffmpeg-filters.html). Long audio preparation writes temporary PCM files to the episode folder and needs disk space proportional to the selected length.
+
+To reproduce the isolated one-hour media check (writes several GB of temporary PCM data under `work/`):
+
+```sh
+PYTHONPATH=. .venv/bin/python scripts/verify_extended_release.py
+```
