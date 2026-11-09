@@ -124,3 +124,15 @@ async def test_tampered_unity_capture_cannot_be_selected(captured):
     engine,store,e,root=captured;before=store.config(e);(root/'visual-recording.mp4').write_bytes(b'changed externally')
     with pytest.raises(ValueError,match='Dependency artifact changed'):await engine.presentation.choose(e,PresentationInput())
     assert store.config(e)==before and set(engine.workflow(e))==set(DAG)
+
+@pytest.mark.asyncio
+async def test_each_extended_export_preserves_existing_release_folder(captured,monkeypatch,tmp_path):
+    engine,store,e,root=captured;config=store.config(e);export=tmp_path/'exports';export.mkdir();old=export/('liminal-'+e);old.mkdir();(old/'final.mp4').write_bytes(b'old exported video')
+    config.update(postproduction_enabled=True,output_directory=str(export));store.execute('UPDATE episodes SET config=? WHERE id=?',(json.dumps(config),e))
+    monkeypatch.setattr(engine,'verify_approval',lambda *args:{})
+    async def assemble(audio,video,out,*args):out.write_bytes(b'extended video')
+    monkeypatch.setattr('backend.orchestration.engine.assemble',assemble);(root/'metadata.json').write_text('{}')
+    await engine.dispatch(e,'final_assembly');await engine.dispatch(e,'final_assembly')
+    assert (old/'final.mp4').read_bytes()==b'old exported video'
+    new=list(export.glob('liminal-'+e+'-extended-*'));assert len(new)==2
+    assert all((p/'final.mp4').read_bytes()==b'extended video' for p in new)
