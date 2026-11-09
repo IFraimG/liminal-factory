@@ -12,6 +12,9 @@ public static class LiminalScene {
         public string style="Liminal Space",scene_type="enclosed_corridor",seat_layout="transverse",ffmpeg="",video_path="";
         public float camera_x=.25f,camera_y=1.15f,camera_z=-3,camera_pitch=3,camera_yaw=35,camera_roll=-10;
         public bool include_figure=false;
+        public Surface[] custom_materials;public Part[] custom_objects;public Illumination[] custom_lights;
+        public float[] sky_color={.025f,.03f,.025f},ambient_color={.32f,.33f,.28f},fog_color={.12f,.12f,.09f},weather_area={60,30,80};
+        public string weather="none";public float weather_amount=.5f;
     }
     static int materialId; static Transform shapeParent;
     static Material Mat(string name,Color color,float roughness=.85f,bool emissive=false) {
@@ -106,6 +109,65 @@ public static class LiminalScene {
             shapeParent=null;
         }
     }
+    [Serializable] public class Surface {public string name,texture="flat";public float[] color;public float roughness=.85f,metallic=0,emission=0,texture_scale=1;}
+    [Serializable] public class Part {public string name,primitive,material,alternate_material="";public float[] position,scale,rotation,step,jitter;public int[] repeat;public float alternate_probability=0;}
+    [Serializable] public class Illumination {public string name,kind;public float[] position,rotation,color;public float intensity,range=15,spot_angle=60;}
+    static Vector3 V(float[] a) {return new Vector3(a[0],a[1],a[2]);}
+    static Color C(float[] a) {return new Color(a[0],a[1],a[2],1);}
+    static void Generic(Config c) {
+        RenderSettings.ambientLight=C(c.ambient_color);RenderSettings.fogColor=C(c.fog_color);RenderSettings.fogDensity=c.fog_density;
+        QualitySettings.pixelLightCount=8;QualitySettings.shadows=ShadowQuality.All;QualitySettings.shadowResolution=ShadowResolution.Medium;
+        var materials=new System.Collections.Generic.Dictionary<string,Material>();
+        foreach(var surface in c.custom_materials) {
+            var m=Mat(surface.name,C(surface.color),surface.roughness,surface.emission>0);
+            m.SetFloat("_Metallic",surface.metallic);if(m.HasProperty("_Smoothness"))m.SetFloat("_Smoothness",1-surface.roughness);
+            if(surface.emission>0)m.SetColor("_EmissionColor",C(surface.color)*surface.emission);
+            if(surface.texture!="flat") {
+                var tex=new Texture2D(128,128,TextureFormat.RGB24,true);tex.name=surface.name+" surface detail";tex.wrapMode=TextureWrapMode.Repeat;
+                for(int y=0;y<128;y++)for(int x=0;x<128;x++) {
+                    float n=UnityEngine.Random.Range(.78f,1.07f),coarse=Mathf.PerlinNoise(x*.055f,y*.055f);
+                    float detail=.8f+coarse*.24f;
+                    if(surface.texture=="brick") {int xx=(x+((y/16)%2)*16)%32;if(y%16<2||xx<2)detail=.45f;}
+                    if(surface.texture=="wood")detail=.65f+.3f*Mathf.Abs(Mathf.Sin(x*.45f+coarse*3));
+                    if(surface.texture=="fabric")detail*=((x+y)%3==0?.8f:1f);
+                    if(surface.texture=="metal")detail=.9f+coarse*.08f;
+                    if(surface.texture=="snow")detail=.9f+coarse*.08f;
+                    tex.SetPixel(x,y,new Color(n*detail,n*detail,n*detail));
+                }
+                tex.Apply();AssetDatabase.CreateAsset(tex,$"Assets/LiminalGenerated/detail{materialId}.asset");m.mainTexture=tex;m.mainTextureScale=Vector2.one*surface.texture_scale;
+            }
+            materials.Add(surface.name,m);
+        }
+        foreach(var part in c.custom_objects) {
+            var primitive=part.primitive=="sphere"?PrimitiveType.Sphere:part.primitive=="cylinder"?PrimitiveType.Cylinder:part.primitive=="capsule"?PrimitiveType.Capsule:part.primitive=="quad"?PrimitiveType.Quad:PrimitiveType.Cube;
+            for(int x=0;x<part.repeat[0];x++)for(int y=0;y<part.repeat[1];y++)for(int z=0;z<part.repeat[2];z++) {
+                var pos=V(part.position)+Vector3.Scale(new Vector3(x,y,z),V(part.step));
+                pos+=new Vector3(UnityEngine.Random.Range(-part.jitter[0],part.jitter[0]),UnityEngine.Random.Range(-part.jitter[1],part.jitter[1]),UnityEngine.Random.Range(-part.jitter[2],part.jitter[2]));
+                var material=materials[part.material];
+                if(!String.IsNullOrEmpty(part.alternate_material)&&UnityEngine.Random.value<part.alternate_probability)material=materials[part.alternate_material];
+                var o=Shape(primitive,part.name,pos,V(part.scale),material);o.transform.rotation=Quaternion.Euler(V(part.rotation));o.isStatic=true;
+                var collider=o.GetComponent<Collider>();if(collider)UnityEngine.Object.DestroyImmediate(collider);
+            }
+        }
+        foreach(var source in c.custom_lights) {
+            var light=new GameObject(source.name).AddComponent<Light>();light.transform.position=V(source.position);light.transform.rotation=Quaternion.Euler(V(source.rotation));
+            light.type=source.kind=="directional"?LightType.Directional:source.kind=="spot"?LightType.Spot:LightType.Point;light.color=C(source.color);light.intensity=source.intensity;light.range=source.range;light.spotAngle=source.spot_angle;light.shadows=LightShadows.Soft;
+        }
+    }
+    static ParticleSystem Weather(Config c,Vector3 origin) {
+        if(c.weather=="none"||c.weather_amount<=0)return null;
+        var system=new GameObject(c.weather+" atmosphere").AddComponent<ParticleSystem>();system.Stop(true,ParticleSystemStopBehavior.StopEmittingAndClear);system.useAutoRandomSeed=false;system.randomSeed=(uint)(c.seed+1);
+        system.transform.position=origin+new Vector3(0,c.weather_area[1]*.35f,15);
+        var main=system.main;main.loop=true;main.playOnAwake=false;main.maxParticles=3000;main.startLifetime=35;main.startSpeed=0;main.simulationSpace=ParticleSystemSimulationSpace.World;
+        main.startSize=c.weather=="rain"?.035f:c.weather=="dust"?.035f:.065f;main.startColor=new Color(.85f,.87f,.88f,c.weather=="dust"?.2f:.65f);
+        var shape=system.shape;shape.shapeType=ParticleSystemShapeType.Box;shape.scale=V(c.weather_area);
+        var velocity=system.velocityOverLifetime;velocity.enabled=true;velocity.space=ParticleSystemSimulationSpace.World;velocity.x=-.35f;velocity.y=c.weather=="rain"?-9:c.weather=="dust"?-.08f:-1.1f;velocity.z=.15f;
+        var emission=system.emission;emission.rateOverTime=70*c.weather_amount;
+        var shader=Shader.Find("Particles/Standard Unlit");if(!shader)throw new Exception("Particle shader unavailable");
+        var material=new Material(shader);material.name=c.weather+" particles";material.SetFloat("_Mode",2);material.SetInt("_SrcBlend",(int)UnityEngine.Rendering.BlendMode.SrcAlpha);material.SetInt("_DstBlend",(int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);material.SetInt("_ZWrite",0);material.renderQueue=3000;
+        AssetDatabase.CreateAsset(material,"Assets/LiminalGenerated/weather.mat");system.GetComponent<ParticleSystemRenderer>().sharedMaterial=material;
+        return system;
+    }
     public static void Render() {
         string[] args=Environment.GetCommandLineArgs();string output="",configPath="";
         for(int i=0;i<args.Length-1;i++) {if(args[i]=="-lfOutput")output=args[i+1];if(args[i]=="-lfConfig")configPath=args[i+1];}
@@ -121,17 +183,19 @@ public static class LiminalScene {
         var wall=Mat("Aged opaque cream enamel",Color.Lerp(tone,new Color(.7f,.69f,.53f),.6f));var floor=Mat("Dark worn rubber",new Color(.13f,.14f,.12f));
         var metal=Mat("Dull stainless steel",new Color(.39f,.41f,.37f),.4f);var dark=Mat("Opaque dark inset",new Color(.025f,.033f,.028f));
         var seat=Mat("Worn brown upholstery",new Color(.29f,.21f,.12f));var glow=Mat("Warm fluorescent tube",new Color(.8f,.85f,.65f),.5f,true);
-        if(c.scene_type=="subway_car") Subway(c,wall,floor,metal,dark,seat,glow);
+        if(c.scene_type=="custom_scene") Generic(c);
+        else if(c.scene_type=="subway_car") Subway(c,wall,floor,metal,dark,seat,glow);
         else {
             Box("Enclosed floor",new Vector3(0,-.12f,0),new Vector3(4,.2f,24),floor);Box("Enclosed ceiling",new Vector3(0,3,0),new Vector3(4.2f,.2f,24),wall);
             for(int side=-1;side<=1;side+=2) {Box("Solid corridor wall",new Vector3(side*2,1.5f,0),new Vector3(.2f,3,24),wall);for(int n=0;n<8;n++) {Box("Wall panel seam",new Vector3(side*1.88f,1.45f,-10+n*3),new Vector3(.03f,2.9f,.035f),metal);Box("Recessed door frame",new Vector3(side*1.86f,1.1f,-8+n*3),new Vector3(.06f,2.2f,1),dark);}}
             Box("End wall",new Vector3(0,1.5f,12),new Vector3(4,3,.2f),wall);for(int n=0;n<8;n++)Lamp(new Vector3(0,2.85f,-10+n*3),glow);
         }
         var camera=new GameObject("Camera").AddComponent<Camera>();camera.tag="MainCamera";var origin=new Vector3(c.camera_x,c.camera_y,c.camera_z);camera.transform.position=origin;
-        camera.transform.rotation=Quaternion.Euler(c.camera_pitch,c.camera_yaw,c.camera_roll);camera.fieldOfView=c.camera_fov;camera.nearClipPlane=.03f;camera.farClipPlane=80;
-        camera.clearFlags=CameraClearFlags.SolidColor;camera.backgroundColor=new Color(.025f,.03f,.025f);
+        camera.transform.rotation=Quaternion.Euler(c.camera_pitch,c.camera_yaw,c.camera_roll);camera.fieldOfView=c.camera_fov;camera.nearClipPlane=.03f;camera.farClipPlane=c.scene_type=="custom_scene"?1500:80;
+        camera.clearFlags=CameraClearFlags.SolidColor;camera.backgroundColor=c.scene_type=="custom_scene"?C(c.sky_color):new Color(.025f,.03f,.025f);
+        var weather=Weather(c,origin);
         EditorSceneManager.SaveScene(scene,"Assets/Liminal.unity");AssetDatabase.SaveAssets();
-        var rt=new RenderTexture(c.width,c.height,24);camera.targetTexture=rt;var texture=new Texture2D(c.width,c.height,TextureFormat.RGB24,false);
+        var rt=new RenderTexture(c.width,c.height,24);rt.antiAliasing=4;camera.targetTexture=rt;var texture=new Texture2D(c.width,c.height,TextureFormat.RGB24,false);
         int frames=Mathf.Max(1,Mathf.RoundToInt(c.seconds*c.fps));Process encoder=null;
         try {
             if(!String.IsNullOrEmpty(c.video_path)) {
@@ -140,7 +204,9 @@ public static class LiminalScene {
                 encoder=Process.Start(start);
             }
             var encoderErrors=encoder?.StandardError.ReadToEndAsync();var buffer=new byte[c.width*c.height*3];
+            if(weather)weather.Simulate(10,true,true,true);
             for(int frame=0;frame<frames;frame++) {
+                if(weather)weather.Simulate(1f/c.fps,true,false,true);
                 float phase=2*Mathf.PI*frame/(c.fps*12f);camera.transform.position=origin+new Vector3(.012f*Mathf.Sin(phase),.006f*Mathf.Cos(phase),0);
                 camera.Render();RenderTexture.active=rt;texture.ReadPixels(new Rect(0,0,c.width,c.height),0,0);texture.Apply();
                 if(encoder!=null) {texture.GetRawTextureData<byte>().CopyTo(buffer);encoder.StandardInput.BaseStream.Write(buffer,0,buffer.Length);}

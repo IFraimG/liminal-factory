@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 public static class LiminalRecording {
     [Serializable] class Config {public int width,height,fps;public float seconds;public string ffmpeg,video_path;}
     [Serializable] class Progress {public int frames,total_frames,fps;public double seconds;public long unity_memory_bytes;public string state;}
+    static ParticleSystem[] weather;
     static Config config;static Camera camera;static Vector3 origin;static RenderTexture target;
     static Texture2D pixels;static byte[] buffer;static Process encoder;static Task<string> errors;
     static string output;static int frame,total;static bool ending;
@@ -23,6 +24,7 @@ public static class LiminalRecording {
             if(SystemInfo.graphicsDeviceType==UnityEngine.Rendering.GraphicsDeviceType.Null)throw new Exception("No graphics device for approved-scene capture");
             Directory.CreateDirectory(output);EditorSceneManager.OpenScene("Assets/Liminal.unity",OpenSceneMode.Single);
             camera=Camera.main;if(!camera)throw new Exception("Approved scene has no MainCamera");origin=camera.transform.position;
+            weather=UnityEngine.Object.FindObjectsByType<ParticleSystem>(FindObjectsSortMode.None);foreach(var system in weather)system.Simulate(10,true,true,true);
             total=Mathf.Max(1,Mathf.RoundToInt(config.seconds*config.fps));frame=0;ending=false;
             target=new RenderTexture(config.width,config.height,24,RenderTextureFormat.ARGB32);target.Create();camera.targetTexture=target;
             pixels=new Texture2D(config.width,config.height,TextureFormat.RGB24,false);buffer=new byte[checked(config.width*config.height*3)];
@@ -41,6 +43,7 @@ public static class LiminalRecording {
             camera.transform.position=origin+new Vector3(.012f*Mathf.Sin(phase),.006f*Mathf.Cos(phase),0);
             var previous=RenderTexture.active;
             try {
+                foreach(var system in weather)system.Simulate(1f/config.fps,true,false,true);
                 camera.Render();RenderTexture.active=target;
                 // ReadPixels already updates the CPU copy. Apply would upload it back to the GPU.
                 pixels.ReadPixels(new Rect(0,0,config.width,config.height),0,0,false);

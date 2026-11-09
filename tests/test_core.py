@@ -201,7 +201,7 @@ async def test_unity_retry_resumes_verified_preview_or_rebuilds_changed_files(se
     import backend.orchestration.engine as module
     from backend.models.schema import SceneDesign
     store,settings=setup;engine=Engine(store,settings.working_directory,settings)
-    eid=engine.create(EpisodeInput(**BASE).model_dump());root=engine.directory(eid)
+    eid=engine.create(EpisodeInput(**BASE,unity_planning_enabled=False).model_dump());root=engine.directory(eid)
     (root/'visual_reference.json').write_text('{"scene":"corridor"}')
     (root/'references').mkdir();(root/'references/ref.png').write_bytes(b'reference')
     (root/'references.json').write_text('["references/ref.png"]')

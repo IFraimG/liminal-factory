@@ -9,8 +9,8 @@ import {JSDOM} from 'jsdom';
 const bootstrapDom=new JSDOM('<div></div>');globalThis.window=bootstrapDom.window;globalThis.document=bootstrapDom.window.document;globalThis.navigator=bootstrapDom.window.navigator;
 const {createRoot}=await import('react-dom/client');
 await fs.mkdir('work',{recursive:true});
-await build({stdin:{contents:"export {PipelineGraph,graphLayout} from './src/components/PipelineGraph'; export {AgentPriorityEditor} from './src/components/AgentPriorityEditor'; export {FinalReview} from './src/components/FinalReview'; export {ExtendedRelease} from './src/components/ExtendedRelease'; export {EpisodeIntentFields} from './src/components/EpisodeIntentFields'; export {ChannelMetadataReview} from './src/components/ChannelMetadataReview';",resolveDir:process.cwd(),loader:'tsx'},bundle:true,platform:'node',format:'esm',outfile:'work/workflow-test-components.mjs',external:['react','react-dom/client','lucide-react'],plugins:[{name:'test-api',setup(builder){builder.onResolve({filter:/stores\/api$/},()=>({path:'test-api',namespace:'mock'}));builder.onLoad({filter:/.*/,namespace:'mock'},()=>({contents:"export async function api(...args){return globalThis.workflowApi(...args)}; export function media(e,p){return '/episodes/'+e+'/file/'+p}",loader:'js'}));}}]});
-const {PipelineGraph,graphLayout,AgentPriorityEditor,FinalReview,ExtendedRelease,EpisodeIntentFields,ChannelMetadataReview}=await import(path.resolve('work/workflow-test-components.mjs'));
+await build({stdin:{contents:"export {PipelineGraph,graphLayout} from './src/components/PipelineGraph'; export {AgentPriorityEditor} from './src/components/AgentPriorityEditor'; export {FinalReview} from './src/components/FinalReview'; export {ExtendedRelease} from './src/components/ExtendedRelease'; export {EpisodeIntentFields} from './src/components/EpisodeIntentFields'; export {ChannelMetadataReview} from './src/components/ChannelMetadataReview'; export {UnityBlueprintPanel} from './src/components/UnityBlueprintPanel';",resolveDir:process.cwd(),loader:'tsx'},bundle:true,platform:'node',format:'esm',outfile:'work/workflow-test-components.mjs',external:['react','react-dom/client','lucide-react'],plugins:[{name:'test-api',setup(builder){builder.onResolve({filter:/stores\/api$/},()=>({path:'test-api',namespace:'mock'}));builder.onLoad({filter:/.*/,namespace:'mock'},()=>({contents:"export async function api(...args){return globalThis.workflowApi(...args)}; export function media(e,p){return '/episodes/'+e+'/file/'+p}",loader:'js'}));}}]});
+const {PipelineGraph,graphLayout,AgentPriorityEditor,FinalReview,ExtendedRelease,EpisodeIntentFields,ChannelMetadataReview,UnityBlueprintPanel}=await import(path.resolve('work/workflow-test-components.mjs'));
 const workflow={audio_reference:[],music_brief:['audio_reference'],music_approval:['music_brief'],audio_engineer:['music_approval'],visual_reference:[],unity_preview:['visual_reference'],visual_approval:['unity_preview'],recording_setup:['visual_approval'],visual_render:['recording_setup'],channel_reference:[],metadata:['channel_reference','music_brief','visual_reference'],final_assembly:['audio_engineer','visual_render','metadata']};
 const defaults={status:'Pending',data:{},agent_priorities:['codex','antigravity','kimi'],execution_kind:'agent',priority_locked:false};
 async function mount(component){
@@ -197,4 +197,31 @@ test('active metadata work locks search and approval controls without locking au
  const detail={...titleDetail,tasks:[...titleDetail.tasks.filter(t=>t.name!=='metadata'),{name:'metadata',status:'Waiting for Permission',data:{}}]};
  const view=await mount(React.createElement(ChannelMetadataReview,{detail,onRefresh:async()=>{}}));
  try{assert(button('Search more channel titles').disabled);assert(button('Approve selected title and hashtags').disabled)}finally{await view.close()}
+});
+
+test('Unity prompt panel enables reference-first planning and sends scoped requirements',async()=>{
+ const calls=[];globalThis.workflowApi=async(...args)=>{calls.push(args)};
+ const view=await mount(React.createElement(UnityBlueprintPanel,{detail:titleDetail,onRefresh:async()=>{}}));
+ try{
+  const input=document.querySelector('[aria-label="Unity prompt requirements"]');
+  await act(()=>{Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set.call(input,'Match the source camera and geometry');input.dispatchEvent(new window.Event('input',{bubbles:true}));});
+  await act(()=>button('Prepare detailed Unity prompt').click());
+  assert.deepEqual(calls,[['/episodes/episode-a/unity-blueprint','POST',{feedback:'Match the source camera and geometry'}]]);
+ }finally{await view.close()}
+});
+test('Unity prompt is visible with fidelity checks and explicit limitations',async()=>{
+ const plan={implementation_prompt:'Detailed reference-first scene instructions',reference_observations:'Observed scene',geometry_and_layout:'Geometry',materials_and_surface_detail:'Materials',lighting_and_color:'Light',camera_and_composition:'Camera',atmosphere_and_motion:'Atmosphere',fidelity_checks:['Check foreground geometry'],limitations:['Exact photographic textures unavailable'],scene_type:'custom_scene'};
+ const detail={...titleDetail,tasks:[...titleDetail.tasks,{name:'unity_blueprint',status:'Completed',data:{result:plan}}]};
+ const view=await mount(React.createElement(UnityBlueprintPanel,{detail,onRefresh:async()=>{}}));
+ try{assert.equal(document.querySelector('[aria-label="Detailed Unity implementation prompt"]').value,plan.implementation_prompt);assert.match(document.body.textContent,/Check foreground geometry/);assert.match(document.body.textContent,/Exact photographic textures unavailable/)}finally{await view.close()}
+});
+test('Unity prompt regeneration locks visual work but allows independent active audio',async()=>{
+ let detail={...titleDetail,tasks:[...titleDetail.tasks,{name:'audio_engineer',status:'Running',data:{}}]};
+ const view=await mount(React.createElement(UnityBlueprintPanel,{detail,onRefresh:async()=>{}}));
+ try{
+  assert.equal(button('Prepare detailed Unity prompt').disabled,false);
+  detail={...detail,tasks:[...detail.tasks,{name:'unity_preview',status:'Waiting for Permission',data:{}}]};
+  await act(()=>view.root.render(React.createElement(UnityBlueprintPanel,{detail,onRefresh:async()=>{}})));
+  assert(button('Prepare detailed Unity prompt').disabled);
+ }finally{await view.close()}
 });

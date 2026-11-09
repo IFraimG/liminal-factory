@@ -5,7 +5,7 @@ from fastapi import FastAPI,Request,HTTPException
 from fastapi.responses import FileResponse,StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
-from backend.models.schema import EpisodeInput,Settings,MusicBrief,RevisionInput,RevisionReply,PresentationInput,ChannelReviewRequest,ChannelTitleApproval
+from backend.models.schema import EpisodeInput,Settings,MusicBrief,RevisionInput,RevisionReply,PresentationInput,ChannelReviewRequest,ChannelTitleApproval,UnityBlueprintRequest
 from backend.storage.db import Store
 from backend.orchestration.engine import Engine,PriorityLockedError
 from backend.orchestration.versions import Versions
@@ -177,6 +177,10 @@ async def cancel_revision(e:str,revision:str):
 @app.post('/episodes/{e}/revisions/{revision}/reply')
 async def reply_revision(e:str,revision:str,request:RevisionReply):
     return {'id':await engine.revisions.reply(e,revision,request)}
+
+@app.post('/episodes/{e}/unity-blueprint')
+async def prepare_unity_blueprint(e:str,request:UnityBlueprintRequest):
+    await engine.scene_planning.enable(e,request.feedback);return {'ok':True}
 
 @app.post('/episodes/{e}/channel-review/search')
 async def search_channel_metadata(e:str,request:ChannelReviewRequest):
