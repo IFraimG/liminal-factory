@@ -12,6 +12,7 @@ class Store:
         CREATE TABLE IF NOT EXISTS logs(id INTEGER PRIMARY KEY AUTOINCREMENT,episode TEXT,task TEXT,message TEXT,created REAL);
         CREATE TABLE IF NOT EXISTS versions(id TEXT PRIMARY KEY,episode TEXT NOT NULL,created REAL NOT NULL,status TEXT NOT NULL,revision_id TEXT,video TEXT NOT NULL,manifest TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS revisions(id TEXT PRIMARY KEY,episode TEXT NOT NULL,created REAL NOT NULL,status TEXT NOT NULL,prompt TEXT NOT NULL,provider TEXT NOT NULL,model TEXT,effort TEXT,scope TEXT NOT NULL,data TEXT NOT NULL DEFAULT '{}',error TEXT NOT NULL DEFAULT '');
+        CREATE TABLE IF NOT EXISTS metadata_rounds(id TEXT PRIMARY KEY,episode TEXT NOT NULL,created REAL NOT NULL,request TEXT NOT NULL,status TEXT NOT NULL,data TEXT NOT NULL DEFAULT '{}',error TEXT NOT NULL DEFAULT '');
         CREATE TABLE IF NOT EXISTS settings(id INTEGER PRIMARY KEY CHECK(id=1),data TEXT);
         CREATE TABLE IF NOT EXISTS cache(key TEXT PRIMARY KEY,data TEXT,created REAL);
         ''')
