@@ -4,6 +4,9 @@ from backend.orchestration.workflow import DAG,GATES,AGENT_TASKS
 from backend.orchestration.herdr_adapter import HerdrAdapter
 from backend.integrations.antigravity import AntigravitySession,AntigravityAdapter
 from backend.integrations.kimi import KimiSession
+from backend.integrations.codex_core import CodexCoreAdapter
+from backend.orchestration.revisions import Revisions
+from backend.orchestration.versions import Versions
 from backend.integrations.quota import QuotaRouter,eligible
 from backend.models.schema import MusicBrief,SunoMusicBrief,VisualBrief,Metadata,SceneSpec,SceneDesign,RecordingPlan,StepPreparation,step_preparation_schema
 from backend.integrations.process import checksum,contained,PROCESS_OBSERVER
@@ -24,7 +27,7 @@ class Engine:
     def __init__(self,store,root,settings,adapter=None,handlers=None):
         self.store=store; self.root=Path(root); self.settings=settings; self.adapter=adapter
         self.semaphore=asyncio.Semaphore(settings.max_concurrent_agents); self.running={}; self.wake=asyncio.Event(); self.stopping=False
-        self.handlers=handlers or {}; self.scheduler=None; self._client_session=None; self._kimi_session=None; self.quota=QuotaRouter(self.manual_quota); self.quota_poll_interval=10
+        self.handlers=handlers or {}; self.scheduler=None; self._client_session=None; self._kimi_session=None; self.quota=QuotaRouter(self.manual_quota); self.quota_poll_interval=10; self.revisions=Revisions(self)
     def directory(self,e): return contained(self.root,e)
     def tool(self,name):
         value=self.settings.tools.get(name) or shutil.which(name)
@@ -38,12 +41,12 @@ class Engine:
         if self._kimi_session is None:
             self._kimi_session=KimiSession(self.tool('hc'),self.settings.tools.get('kimi'),self.settings.antigravity_wait_seconds,self.root)
         return self._kimi_session
-    def herdr(self,task='',provider=None):
+    def herdr(self,task='',provider=None,model=None,effort='medium'):
         if self.adapter:return self.adapter
         provider=provider or self.settings.agent_kind
         if provider=='kimi':return AntigravityAdapter(self.kimi_session())
         if provider in {'gemini','antigravity'}:return AntigravityAdapter(self.client_session())
-        return HerdrAdapter(self.tool('herdr'),provider,self.settings.agent_models.get(task,self.settings.model),[str(Path(self.tool(provider)).parent)])
+        return CodexCoreAdapter(self.tool('hc'),self.tool('codex'),model or self.settings.agent_models.get(task,self.settings.model) or 'gpt-6.1-sol',effort)
     def manual_quota(self,provider):
         rows=self.store.rows('SELECT data FROM cache WHERE key=?',('agent-quota:'+provider,))
         return json.loads(rows[0]['data']) if rows else None
@@ -98,6 +101,14 @@ class Engine:
     async def recover(self):
         for row in self.store.rows('SELECT id FROM episodes'):
             for name in DAG:self.store.execute('INSERT OR IGNORE INTO tasks(episode,name) VALUES(?,?)',(row['id'],name))
+        for row in self.store.rows("SELECT id FROM revisions WHERE status IN ('Planning','Waiting for quota','Waiting for CLI','Waiting for Permission','Applying')"):
+            identity=self.revisions.get(row['id'])['data'].get('identity')
+            if identity and identity.get('transport')=='herdr-core-codex-exec':
+                try:
+                    adapter=CodexCoreAdapter(self.tool('hc'),identity['executable'],identity.get('model','gpt-6.1-sol'),identity.get('effort','medium'))
+                    await adapter.cancel(identity)
+                except (OSError,RuntimeError,ValueError,KeyError):pass
+            self.revisions.update(row['id'],'Failed',error='Revision analysis interrupted by application restart. No partial plan was applied; submit a new request.')
         # Never kill or trust a saved PID. Reconcile only the persisted Herdr identity.
         for t in self.store.rows("SELECT * FROM tasks WHERE status IN ('Running','Waiting for Client','Waiting for CLI','Waiting for Permission','Waiting for quota')"):
             e,n=t['episode'],t['name']; data=json.loads(t['data']); identity=data.get('identity')
@@ -105,6 +116,10 @@ class Engine:
                 message='Client task interrupted by restart. Its user-owned pane was left untouched; reconnect the Client-launched session and retry.'
             elif identity:
                 try:
+                    if identity.get('transport')=='herdr-core-codex-exec':
+                        adapter=CodexCoreAdapter(self.tool('hc'),identity['executable'],identity.get('model','gpt-6.1-sol'),identity.get('effort','medium'))
+                        await adapter.cancel(identity)
+                        self.store.update(e,n,'Failed','Owned Codex task interrupted by restart; retry explicitly.');continue
                     adapter=self.herdr(n)
                     await adapter.cli('agent','get',identity['agent'])
                     await adapter.cancel(identity)
@@ -117,7 +132,7 @@ class Engine:
         while not self.stopping:
             for episode in self.store.rows('SELECT id FROM episodes'):
                 e=episode['id']
-                if not self.enabled(e): continue
+                if not self.enabled(e) or e in self.revisions.applying: continue
                 for n,deps in DAG.items():
                     key=(e,n); t=self.store.task(e,n)
                     if key in self.running or t['status']!='Pending': continue
@@ -152,6 +167,8 @@ class Engine:
                 data['artifact_checksums']={name:checksum(contained(self.directory(e),name)) for name in data.get('artifacts',[]) if contained(self.directory(e),name).is_file()}
                 t=self.store.task(e,n); self.store.update(e,n,'Completed',data={**t['data'],**(data or {})})
                 self.store.log(e,n,'Task completed; artifacts validated')
+                if n=='final_assembly' and t['data'].get('revision_id'):
+                    self.revisions.update(t['data']['revision_id'],'Completed')
             except asyncio.CancelledError:
                 self.store.update(e,n,'Cancelled'); self.store.log(e,n,'Cancelled'); raise
             except Exception as exc:
@@ -192,17 +209,21 @@ class Engine:
                 for path in self.store.task(e,dependency)['data'].get('artifacts',[]): snapshot[path]=checksum(contained(root,path))
             identity={**identity,'input_checksums':snapshot,'result_schema':schema.__name__}
             data=self.store.task(e,n)['data']; self.store.update(e,n,data={**data,'identity':identity})
-        order=order_for(self.store.config(e),self.settings.agent_kind,n)
+        revision_agent=self.store.task(e,n)['data'].get('revision_agent')
+        order=[revision_agent['provider']] if revision_agent else order_for(self.store.config(e),self.settings.agent_kind,n)
         routing=self.store.task(e,n)['data']
         self.store.update(e,n,data={**routing,'priority_snapshot':order,'selected_provider':None,'identity':None,'previous_identities':[*routing.get('previous_identities',[]),*([routing['identity']] if routing.get('identity') else [])][-20:]})
         provider=None if self.adapter else await self.select_provider(e,n,order)
-        adapter=self.adapter or self.herdr(n,provider)
+        adapter=self.adapter or (self.herdr(n,provider,model=revision_agent.get('model'),effort=revision_agent.get('effort','medium')) if revision_agent else self.herdr(n,provider))
         if provider:
             routing=self.store.task(e,n)['data'];history=list(routing.get('agent_selections',[]))
             history.append({'provider':provider,'time':time.time(),'quota':dict(self.quota.latest.get(provider,{}))})
             self.store.update(e,n,data={**routing,'selected_provider':provider,'agent_selections':history})
             self.store.log(e,n,'Selected '+provider+' by step priority: '+('unknown Argon quota allowed by policy' if self.quota.latest.get(provider,{}).get('remaining_percent') is None and provider=='antigravity' else 'verified quota ≥5%'))
         def connect_callbacks(adapter):
+            if isinstance(adapter,CodexCoreAdapter):
+                adapter.on_state=lambda value:self.store.update(e,n,'Waiting for Permission' if value=='blocked' else 'Running')
+                return
             if not isinstance(adapter,AntigravityAdapter):return
             def waiting():
                 self.store.update(e,n,'Waiting for CLI' if isinstance(adapter.session,KimiSession) else 'Waiting for Client')
@@ -223,11 +244,14 @@ class Engine:
             adapter.on_state=state_changed
         connect_callbacks(adapter)
         feedback=self.store.task(e,n)['data'].get('feedback','')
-        if feedback: prompt+='\nUser requested changes (creative guidance only): '+feedback
+        if feedback:
+            prompt+='\nUser requested changes (creative guidance only): '+feedback
+            if n in {'metadata','music_brief','visual_reference'}:prompt+=' Read the existing '+n+'.json and preserve all fields not explicitly requested. This is a targeted edit, not a new draft.'
+            if n=='unity_preview':prompt+=' Read the current scene_spec.json first and retain every supported value not changed by this request. Do not reset the camera, seat layout or palette unnecessarily.'
         operation=None
         try:
             full_prompt=REFERENCE_POLICY+'\n'+prompt+'\nRequired JSON schema: '+json.dumps(schema.model_json_schema())
-            operation=asyncio.create_task(adapter.launch(root,full_prompt,result,save))
+            operation=asyncio.create_task(adapter.launch(root,full_prompt,result,save,**({'schema':schema.model_json_schema()} if isinstance(adapter,CodexCoreAdapter) else {})))
             while True:
                 done,_=await asyncio.wait({operation},timeout=self.quota_poll_interval)
                 if done:
@@ -242,13 +266,23 @@ class Engine:
                     operation.cancel();await asyncio.gather(operation,return_exceptions=True)
                     self.store.log(e,n,'Active agent quota is below 5% or unknown. Its prompt was stopped; selecting the first eligible agent in this step priority.')
                     provider=await self.select_provider(e,n,order)
-                    adapter=self.herdr(n,provider);connect_callbacks(adapter)
+                    adapter=self.herdr(n,provider,model=revision_agent.get('model'),effort=revision_agent.get('effort','medium')) if revision_agent else self.herdr(n,provider)
+                    connect_callbacks(adapter)
                     routing=self.store.task(e,n)['data'];history=list(routing.get('agent_selections',[]))
                     history.append({'provider':provider,'time':time.time(),'quota':dict(self.quota.latest.get(provider,{}))})
                     self.store.update(e,n,data={**routing,'selected_provider':provider,'agent_selections':history})
                     result=f'{n}-{uuid.uuid4().hex}.json'
-                    operation=asyncio.create_task(adapter.launch(root,full_prompt,result,save))
+                    operation=asyncio.create_task(adapter.launch(root,full_prompt,result,save,**({'schema':schema.model_json_schema()} if isinstance(adapter,CodexCoreAdapter) else {})))
             checked=schema.model_validate(data).model_dump()
+            fields=self.store.task(e,n)['data'].get('revision_fields',[])
+            old_path=root/('scene_spec.json' if issubclass(schema,SceneSpec) else n+'.json')
+            if fields and old_path.is_file() and (issubclass(schema,SceneSpec) or n in {'metadata','music_brief','visual_reference'}):
+                old=json.loads(old_path.read_text());allowed=set(fields)
+                if issubclass(schema,SceneSpec):allowed.add('explanation')
+                if n=='metadata' and 'titles' in allowed:allowed.add('recommended')
+                for key,value in old.items():
+                    if key in checked and key not in allowed:checked[key]=value
+                checked=schema.model_validate(checked).model_dump()
             (root/f'{n}.json').write_text(json.dumps(checked,indent=2))
             return {'artifacts':[f'{n}.json'],'result':checked}
         finally:
@@ -280,7 +314,7 @@ class Engine:
             return result
         if n=='audio_engineer':
             data=self.verify_approval(e,'music_approval'); paths=[contained(root,p) for p in data['music']]
-            await process_audio(paths,root/'final.wav',c['duration_minutes']*60,c['audio_mode'],self.tool('ffmpeg'),self.tool('ffprobe'))
+            await process_audio(paths,root/'final.wav',c['duration_minutes']*60,c['audio_mode'],self.tool('ffmpeg'),self.tool('ffprobe'),gain_db=c.get('audio_gain_db',0),fade_seconds=c.get('audio_fade_seconds',0))
             return {'artifacts':['final.wav','final.report.json']}
         if n=='unity_preview':
             checkpoint=self.store.task(e,n)['data'].get('preview_checkpoint')
@@ -319,7 +353,8 @@ class Engine:
             await assemble(root/'final.wav',root/('visual-recording.mp4' if c.get('recording_minutes') else 'visual-loop.mp4'),out/'final.mp4',c,self.tool('ffmpeg'),self.tool('ffprobe'))
             shutil.copy2(root/'metadata.json',out/'metadata.json')
             if c.get('output_directory'):
-                destination=Path(c['output_directory']).expanduser().resolve()/('liminal-'+e)
+                revision_id=self.store.task(e,n)['data'].get('revision_id')
+                destination=Path(c['output_directory']).expanduser().resolve()/('liminal-'+e+('-r-'+revision_id[:8] if revision_id else ''))
                 destination.mkdir(parents=True,exist_ok=False)
                 shutil.copy2(out/'final.mp4',destination/'final.mp4'); shutil.copy2(out/'metadata.json',destination/'metadata.json')
             return {'artifacts':['output/final.mp4','output/metadata.json']}
@@ -328,6 +363,9 @@ class Engine:
         if not isinstance(minutes,(int,float)) or isinstance(minutes,bool) or not 0<minutes<=180:raise ValueError('Enter a duration above 0 and at most 180 minutes')
         config=self.store.config(e)
         if any(key[0]==e for key in self.running):raise ValueError('Wait for active episode tasks before changing recording duration')
+        version=Versions(self.store,self.root).archive(e,{'recording_setup','visual_render','audio_engineer','final_assembly'})
+        if version:
+            Versions(self.store,self.root).insert(version);self.store.db.commit()
         config.update(recording_minutes=minutes,duration_minutes=minutes)
         self.store.execute('UPDATE episodes SET config=? WHERE id=?',(json.dumps(config),e))
         for name in ('recording_setup','visual_render','audio_engineer','final_assembly'):
@@ -385,7 +423,8 @@ class Engine:
         if self.store.task(e,n)['status'] not in {'Failed','Cancelled'}: raise ValueError('Only failed/cancelled tasks can be retried')
         if any(self.store.task(e,d)['status'] not in SUCCESS for d in DAG[n]): raise ValueError('Complete dependencies first')
         old=self.store.task(e,n)['data']
-        preserved={'preview_checkpoint':old['preview_checkpoint']} if n=='unity_preview' and old.get('preview_checkpoint') else {}
+        preserved={key:old[key] for key in ('revision_id','revision_agent','revision_fields','feedback') if key in old}
+        if n=='unity_preview' and old.get('preview_checkpoint'):preserved['preview_checkpoint']=old['preview_checkpoint']
         self.store.update(e,n,'Pending',error='',data=preserved); self.wake.set()
     async def request_changes(self,e,n,reason):
         if n not in GATES: raise ValueError('Changes require an approval gate')
@@ -398,9 +437,18 @@ class Engine:
             new={task for task,deps in DAG.items() if any(d in affected for d in deps)}-affected
             changed=bool(new); affected|=new
         for task in affected:
-            if (e,task) in self.running: await self.cancel(e,task)
-            self.store.update(e,task,'Pending',error='',data={})
-        self.store.update(e,source,data={'feedback':reason})
+            if (e,task) in self.running:await self.cancel(e,task)
+        version=Versions(self.store,self.root).archive(e,affected)
+        self.store.db.execute('BEGIN IMMEDIATE')
+        try:
+            Versions(self.store,self.root).insert(version)
+            for task in affected:
+                old=self.store.task(e,task)['data'];state={key:old[key] for key in ('revision_id','revision_agent','revision_fields') if key in old}
+                if task==source:
+                    state['feedback']=reason;state.pop('revision_fields',None)
+                self.store.db.execute("UPDATE tasks SET status='Pending',error='',data=?,started=NULL,finished=NULL WHERE episode=? AND name=?",(json.dumps(state),e,task))
+            self.store.db.commit()
+        except BaseException:self.store.db.rollback();raise
         self.store.log(e,n,'Requested changes: '+reason); self.wake.set()
     async def approve(self,e,n):
         if n not in GATES or self.store.task(e,n)['status']!='Waiting for Approval': raise ValueError('Task is not awaiting approval')
@@ -418,6 +466,7 @@ class Engine:
         self.store.update(e,n,'Approved',data=data); self.store.log(e,n,'Approved with SHA-256 checksums'); self.wake.set()
     async def close(self):
         self.stopping=True
+        await self.revisions.close()
         if self.scheduler: self.scheduler.cancel()
         tasks=list(self.running.values())
         for task in tasks: task.cancel()

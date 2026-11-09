@@ -14,7 +14,7 @@
 | Экспорт | WAV заданной длительности; H.264/AAC MP4 с проверками FFprobe и контрольным декодированием |
 | Упаковка | Tauri `.app` со встроенным Python sidecar; конфигурация `.dmg` |
 
-Проверены запуск `.app` на Apple Silicon, создание эпизода через GUI, восстановление после перезапуска, 82 автоматизированных теста и WAV ровно на 3600 секунд. Полный цикл с реальными Herdr/AI/YouTube/Unity пока не проверен. Результаты и ограничения перечислены в [VERIFICATION.md](VERIFICATION.md), план — в [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
+Проверены запуск `.app` на Apple Silicon, создание эпизода через GUI, восстановление после перезапуска, 188 Python-тестов и 24 теста интерфейса, WAV ровно на 3600 секунд и завершённый эпизод с Unity-записью на 180 секунд. Правки финала и сохранение нескольких версий проверены на отдельном тестовом эпизоде; реальный GPT-6.1 Sol Medium вернул валидный план правки. Результаты и ограничения перечислены в [VERIFICATION.md](VERIFICATION.md), план — в [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
 
 ## Требования
 
@@ -467,3 +467,26 @@ Full recording now loads `Assets/Liminal.unity` with its existing camera and mat
 `recording-frames/progress.json` reports captured frame count and tracked Unity allocation; `complete.json` is written only after the encoder finishes. Output first goes to `visual-recording.inprogress.mp4`. The backend independently checks duration, dimensions, FPS and frame count with FFprobe before replacing `visual-recording.mp4`. Failed captures preserve an earlier completed recording.
 
 Exit `-9` is reported as **SIGKILL** with the last recorded progress, not automatically called a license or graphics failure. Memory pressure or an external termination can cause it; this exit code alone cannot establish the exact cause. The original synchronous full-duration capture was replaced after the 3-minute recording failed. A full 180-second 1080p24 capture of the saved scene completed with 4320 frames, independently probed and decoded at the start, middle and end. Unity's tracked allocations stayed between 140 and 154 MiB during that test; this is not a measurement of total system/GPU memory.
+
+### Revising a delivered video without restarting independent branches
+
+Open a completed episode and scroll to **Final video · revisions**. Write the requested correction next to the video and click **Request revision**. The default agent is **GPT-6.1 Sol · Medium** (`gpt-6.1-sol`, reasoning effort `medium`). You can select Argon or Kimi instead. **Affected area** defaults to Auto; selecting a specific area constrains the plan to it.
+
+The agent first returns a structured, validated plan. Until that plan is accepted by the application, the existing final remains current. Ambiguous or unsupported requests show **Needs clarification** and keep all current results. Submit a more specific request after clarification. Cancelling analysis also preserves the current version.
+
+Before resetting any tasks, the app copies the previous final, its metadata and affected source artifacts into a unique `versions/<id>/` directory, checks copied bytes, and stores the original task states and configuration in a manifest. The old final is then marked **superseded** and remains playable under **Previous finals · history**, including while a replacement is pending or failed. A successful replacement becomes current. Each later revision creates another history entry. Historical source checksum mismatches are recorded as warnings; original expected hashes are retained.
+
+Only actual dependencies restart:
+
+| Requested edit | Restarted work |
+| --- | --- |
+| Unity scene, fog or camera | Unity Preview → your Visual Approval → Recording Setup → Visual Render → Final Assembly |
+| Recording resolution or FPS | Recording Setup → Visual Render → Final Assembly |
+| Recording duration | Recording Setup → Visual Render, plus Audio Engineer for matching length → Final Assembly |
+| Audio level, fade or mixing mode | Audio Engineer → Final Assembly |
+| Description, titles or hashtags | Metadata → Final Assembly |
+| Musical brief | Music Brief → your Music Approval → Audio Engineer, dependent Metadata → Final Assembly |
+
+Unrelated task records, files and per-step priorities stay unchanged. A narrow edit can restrict allowed JSON fields, so changing the description preserves titles and hashtags. Unity edits are limited to the existing procedural scene parameters; unsupported meshes or effects require extending the renderer. Duration, resolution and frame-rate bounds still apply. Existing manual creative approval gates are never bypassed.
+
+The chosen revision provider is pinned for the affected work; it does not silently switch to another provider. The same 5% eligibility rule applies, including the explicit unknown-Argon policy. Unknown/low GPT quota pauses at **Waiting for quota**. Codex uses your existing account authorization and Herdr Core, with a read-only `codex exec` request and strict output schema; the app applies the validated result. No YouTube API key or new OpenAI API key is required. CLI trust/permission prompts remain for you to resolve. After an interrupted run, use Retry on the affected failed step; the revision context is retained.

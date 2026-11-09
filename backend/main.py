@@ -5,9 +5,10 @@ from fastapi import FastAPI,Request,HTTPException
 from fastapi.responses import FileResponse,StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
-from backend.models.schema import EpisodeInput,Settings,MusicBrief
+from backend.models.schema import EpisodeInput,Settings,MusicBrief,RevisionInput
 from backend.storage.db import Store
 from backend.orchestration.engine import Engine,PriorityLockedError
+from backend.orchestration.versions import Versions
 from backend.orchestration.workflow import DAG,GATES
 from backend.orchestration.priorities import LOCAL_TASKS,PROVIDERS,order_for
 from backend.integrations.quota import eligible
@@ -55,6 +56,9 @@ async def auth(request:Request,call_next):
         if int(request.headers.get('content-length','0'))>100*1024*1024:
             from fastapi.responses import JSONResponse
             return JSONResponse({'detail':'Request too large'},413)
+    if request.method not in {'GET','OPTIONS'} and request.url.path.startswith('/episodes/') and request.url.path.split('/')[2] in engine.revisions.applying:
+        from fastapi.responses import JSONResponse
+        return JSONResponse({'detail':'Saving the previous version; wait for the snapshot to finish'},409)
     try: return await call_next(request)
     except (ValueError,KeyError,FileNotFoundError) as exc:
         from fastapi.responses import JSONResponse
@@ -68,7 +72,7 @@ async def settings(): return get_settings().model_dump()
 
 @app.put('/settings')
 async def save_settings(s:Settings):
-    if engine.running: raise HTTPException(409,'Cancel running tasks before changing settings')
+    if engine.running or engine.revisions.jobs: raise HTTPException(409,'Cancel running tasks before changing settings')
     old=get_settings()
     root=Path(s.working_directory).expanduser().resolve()
     forbidden=[Path('/'),Path.home(),Path('/System'),Path('/Applications'),Path('/Library'),Path('/usr'),Path('/bin'),Path('/etc')]
@@ -161,7 +165,14 @@ async def detail(e:str):
     names=json.loads(manifest.read_text()) if manifest.exists() else []
     for path in names:
         if contained(root,path).is_file(): refs.append(path)
-    return {'id':e,'config':config,'tasks':tasks,'logs':store.rows('SELECT * FROM logs WHERE episode=? ORDER BY id DESC LIMIT 300',(e,)),'artifacts':artifacts,'references':refs,'music':[str(p.relative_to(root)) for p in sorted((root/'music').glob('*'))],'workflow':DAG}
+    return {'id':e,'config':config,'tasks':tasks,'logs':store.rows('SELECT * FROM logs WHERE episode=? ORDER BY id DESC LIMIT 300',(e,)),'artifacts':artifacts,'references':refs,'music':[str(p.relative_to(root)) for p in sorted((root/'music').glob('*'))],'workflow':DAG,'versions':Versions(store,engine.root).list(e),'revisions':engine.revisions.rows(e),'final_current':store.task(e,'final_assembly')['status']=='Completed'}
+
+@app.post('/episodes/{e}/revisions')
+async def request_revision(e:str,request:RevisionInput):return {'id':engine.revisions.create(e,request)}
+
+@app.post('/episodes/{e}/revisions/{revision}/cancel')
+async def cancel_revision(e:str,revision:str):
+    await engine.revisions.cancel(e,revision);return {'ok':True}
 
 @app.put('/episodes/{e}/recording')
 async def recording_duration(e:str,request:Request):

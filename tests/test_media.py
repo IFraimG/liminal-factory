@@ -33,3 +33,17 @@ async def test_real_video_assembly(tmp_path):
     report=await assemble(audio,loop,out,{'duration_minutes':2/60,'resolution':'1080p','fps':24})
     assert float(report['format']['duration'])==pytest.approx(2,abs=.05)
     assert {s['codec_type'] for s in report['streams']}=={'video','audio'}
+
+async def test_revision_gain_and_fades_change_audio_without_changing_duration(tmp_path):
+    rate=48000;t=np.arange(rate*2)/rate;wave=.18*np.sin(2*np.pi*220*t)
+    source=tmp_path/'music.wav';sf.write(source,np.column_stack([wave,wave]),rate)
+    base=tmp_path/'base/final.wav';edited=tmp_path/'edit/final.wav'
+    await process_audio([source],base,6,'Seamless Loop')
+    report=await process_audio([source],edited,6,'Seamless Loop',gain_db=-6,fade_seconds=1)
+    original,_=sf.read(base);result,_=sf.read(edited)
+    assert original.shape==result.shape==(rate*6,2)
+    mid=slice(rate*2,rate*3)
+    assert np.sqrt(np.mean(result[mid]**2)/np.mean(original[mid]**2))==pytest.approx(10**(-6/20),rel=.02)
+    assert np.sqrt(np.mean(result[:rate//10]**2))<np.sqrt(np.mean(result[mid]**2))*.1
+    assert np.sqrt(np.mean(result[-rate//10:]**2))<np.sqrt(np.mean(result[mid]**2))*.1
+    assert report['gain_db']==-6 and report['fade_seconds']==1 and report['true_peak_dbtp']<=-1

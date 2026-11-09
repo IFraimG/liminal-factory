@@ -32,6 +32,8 @@ class EpisodeInput(BaseModel):
     resolution: str='1080p'
     fps: int=24
     audio_mode: str='Seamless Loop'
+    audio_gain_db: float=Field(default=0,ge=-24,le=12)
+    audio_fade_seconds: float=Field(default=0,ge=0,le=30)
     loop_seconds: int=Field(default=12,ge=2,le=120)
     style: str='Liminal Space'
     output_directory: str=''
@@ -175,3 +177,41 @@ def step_preparation_schema(task):
     from backend.orchestration.priorities import LOCAL_TASKS
     if task not in LOCAL_TASKS:raise ValueError('Preparation requires a local execution step')
     return create_model(task+'Preparation',__base__=StepPreparation,task=(Literal[task],...))
+
+
+RevisionScope=Literal['unity_scene','visual_analysis','recording','music_brief','audio_processing','metadata']
+class RevisionConfig(BaseModel):
+    model_config={'extra':'forbid'}
+    resolution: Literal['1080p','1440p','4K']|None=None
+    fps: Literal[24,30,60]|None=None
+    recording_minutes: float|None=Field(default=None,gt=0,le=180)
+    audio_mode: Literal['Seamless Loop','Ambient Evolution','Multi-track']|None=None
+    audio_gain_db: float|None=Field(default=None,ge=-24,le=12)
+    audio_fade_seconds: float|None=Field(default=None,ge=0,le=30)
+class RevisionChange(BaseModel):
+    model_config={'extra':'forbid'}
+    scope: RevisionScope
+    instruction: str=Field(min_length=3,max_length=8000)
+    allowed_fields: list[str]=Field(default_factory=list,max_length=30)
+class RevisionPlan(BaseModel):
+    model_config={'extra':'forbid'}
+    changes: list[RevisionChange]=Field(max_length=6)
+    config_updates: RevisionConfig
+    explanation: str=Field(min_length=10,max_length=3000)
+    needs_clarification: bool
+    clarification: str=Field(max_length=3000)
+    @model_validator(mode='after')
+    def actionable(self):
+        if not self.needs_clarification and not self.changes:raise ValueError('Select a minimal affected scope')
+        if self.needs_clarification and not self.clarification.strip():raise ValueError('Explain which information is missing')
+        return self
+class RevisionInput(BaseModel):
+    prompt: str=Field(min_length=3,max_length=8000)
+    provider: Literal['codex','antigravity','kimi']='codex'
+    scope: Literal['auto','unity_scene','visual_analysis','recording','music_brief','audio_processing','metadata']='auto'
+    @field_validator('prompt')
+    @classmethod
+    def prompt_text(cls,value):
+        value=value.strip()
+        if len(value)<3:raise ValueError('Describe the requested changes')
+        return value
