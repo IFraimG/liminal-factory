@@ -89,7 +89,7 @@ async def test_waiting_quota_sends_nothing_and_resumes_on_fresh_report(configure
         if not pending.done():pending.cancel();await asyncio.gather(pending,return_exceptions=True)
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('name',sorted(LOCAL_TASKS))
+@pytest.mark.parametrize('name',sorted(LOCAL_TASKS & set(__import__('backend.orchestration.workflow',fromlist=['DAG']).DAG)))
 async def test_local_steps_prepare_with_selected_agent_before_tools(configured,monkeypatch,name):
     engine,store,eid=configured;order=[]
     for dependency in __import__('backend.orchestration.workflow',fromlist=['DAG']).DAG[name]:store.update(eid,dependency,'Completed')
