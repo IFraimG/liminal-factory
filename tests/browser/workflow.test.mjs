@@ -225,3 +225,14 @@ test('Unity prompt regeneration locks visual work but allows independent active 
   assert(button('Prepare detailed Unity prompt').disabled);
  }finally{await view.close()}
 });
+
+test('image approval step shows its image review without the source selection form',async()=>{
+ const detail={...releaseDetail,config:{...releaseDetail.config,presentation_mode:'image',presentation_minutes:60},tasks:[...releaseDetail.tasks,{name:'image_edit',status:'Completed',data:{image:'image-edits/a.png'}},{name:'image_approval',status:'Waiting for Approval',data:{}}]};
+ const view=await mount(React.createElement(ExtendedRelease,{detail,view:'image_approval',onRefresh:async()=>{}}));
+ try{assert(document.querySelector('.image-review'));assert.equal(document.querySelector('[aria-label="Visual source"]'),null);assert(button('Approve image and extend video'))}finally{await view.close()}
+});
+test('visual choice step keeps source selection without showing a previous edited image',async()=>{
+ const detail={...releaseDetail,config:{...releaseDetail.config,presentation_mode:'image'},tasks:[...releaseDetail.tasks,{name:'image_edit',status:'Completed',data:{image:'image-edits/a.png'}},{name:'image_approval',status:'Waiting for Approval',data:{}}]};
+ const view=await mount(React.createElement(ExtendedRelease,{detail,view:'visual_choice',onRefresh:async()=>{}}));
+ try{assert(document.querySelector('[aria-label="Visual source"]'));assert.equal(document.querySelector('.image-review'),null)}finally{await view.close()}
+});
