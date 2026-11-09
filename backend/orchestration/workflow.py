@@ -13,4 +13,4 @@ DAG={
  'final_assembly': ['audio_engineer','visual_render','metadata'],
 }
 GATES={'music_approval','visual_approval'}
-AGENT_TASKS={'music_brief','visual_reference','metadata'}
+AGENT_TASKS=set(DAG)-GATES

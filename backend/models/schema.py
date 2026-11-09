@@ -6,7 +6,7 @@ import re
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 class Status(StrEnum):
-    pending='Pending'; running='Running'; waiting_client='Waiting for Client'; waiting_cli='Waiting for CLI'; waiting_permission='Waiting for Permission'; waiting='Waiting for Approval'; approved='Approved'; failed='Failed'; completed='Completed'; cancelled='Cancelled'
+    pending='Pending'; running='Running'; waiting_client='Waiting for Client'; waiting_quota='Waiting for quota'; waiting_cli='Waiting for CLI'; waiting_permission='Waiting for Permission'; waiting='Waiting for Approval'; approved='Approved'; failed='Failed'; completed='Completed'; cancelled='Cancelled'
 
 def youtube_url(value: str, channel=False):
     p=urlparse(value)
@@ -35,6 +35,14 @@ class EpisodeInput(BaseModel):
     loop_seconds: int=Field(default=12,ge=2,le=120)
     style: str='Liminal Space'
     output_directory: str=''
+    agent_priorities: dict[str,list[str]]=Field(default_factory=dict)
+    @field_validator('agent_priorities')
+    @classmethod
+    def priorities(cls,value):
+        from backend.orchestration.priorities import validate_order
+        from backend.orchestration.workflow import DAG,GATES
+        if set(value)-(set(DAG)-GATES):raise ValueError('Agent priority requires an executable pipeline step')
+        return {name:validate_order(order) for name,order in value.items()}
     @field_validator('audio_url')
     @classmethod
     def video(cls,v): return youtube_url(v)
@@ -149,3 +157,14 @@ class RecordingPlan(BaseModel):
     resolution: Literal['1080p','1440p','4K']
     camera: Literal['approved_scene_camera']
     explanation: str=Field(min_length=20,max_length=3000)
+
+class StepPreparation(BaseModel):
+    model_config={'extra':'forbid'}
+    task: str=Field(min_length=1,max_length=80)
+    summary: str=Field(min_length=10,max_length=2000)
+    checks: list[str]=Field(min_length=1,max_length=6)
+    @field_validator('checks')
+    @classmethod
+    def bounded_checks(cls,values):
+        if any(not 3<=len(v)<=500 for v in values):raise ValueError('Use short concrete checks')
+        return values

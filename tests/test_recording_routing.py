@@ -14,7 +14,9 @@ from backend.models.schema import Settings
 async def test_quota_boundary_and_unknown(monkeypatch,used,selected):
     async def read(_):return None if used is None else 100-used
     monkeypatch.setattr('backend.integrations.quota.codex_limits',read)
-    assert await QuotaRouter().choose('codex','codex')==selected
+    import time
+    router=QuotaRouter(lambda p:{'remaining_percent':80,'expires_at':time.time()+100} if p=='kimi' else None)
+    assert await router.choose(['codex','kimi'],'codex')==selected
 
 def test_quota_windows_not_context_and_expired():
     assert remaining_percent({'primary':{'usedPercent':20},'secondary':{'usedPercent':99}})==1
@@ -99,15 +101,16 @@ async def test_active_handoff_never_starts_competing_prompt(tmp_path,monkeypatch
             return {'brief':'Original ambient composition','prompts':['one','two']}
         async def cancel(self,identity):pass
         async def logs(self,identity):return ''
-    async def choose(*args):return 'codex'
+    selection=iter(['codex','kimi'])
+    async def choose(*args):return next(selection)
     async def read(*args):return 4.9
-    monkeypatch.setattr(engine,'herdr',lambda task:Primary());monkeypatch.setattr(engine,'kimi_session',lambda:object())
+    monkeypatch.setattr(engine,'herdr',lambda task,provider=None:Primary() if provider=='codex' else Kimi(object()));monkeypatch.setattr(engine,'kimi_session',lambda:object())
     monkeypatch.setattr(engine.quota,'choose',choose);monkeypatch.setattr(engine.quota,'read',read)
     monkeypatch.setattr(module,'AntigravityAdapter',Kimi)
     if verified_stop:
         result=await engine.ask(eid,'music_brief','compose',MusicBrief)
         assert result['result']['brief']=='Original ambient composition' and active['kimi']
     else:
-        with pytest.raises(RuntimeError,match='Cannot verify primary CLI stopped'):await engine.ask(eid,'music_brief','compose',MusicBrief)
+        with pytest.raises(RuntimeError,match='Cannot verify active CLI stopped'):await engine.ask(eid,'music_brief','compose',MusicBrief)
         assert not active['kimi']
     assert not active['primary']

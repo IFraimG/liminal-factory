@@ -5,7 +5,7 @@ from backend.orchestration.herdr_adapter import HerdrAdapter
 from backend.integrations.antigravity import AntigravitySession,AntigravityAdapter
 from backend.integrations.kimi import KimiSession
 from backend.integrations.quota import QuotaRouter
-from backend.models.schema import MusicBrief,SunoMusicBrief,VisualBrief,Metadata,SceneSpec,SceneDesign,RecordingPlan
+from backend.models.schema import MusicBrief,SunoMusicBrief,VisualBrief,Metadata,SceneSpec,SceneDesign,RecordingPlan,StepPreparation
 from backend.integrations.process import checksum,contained,PROCESS_OBSERVER
 from backend.integrations.unity import Unity
 from backend.integrations.youtube import channel_titles
@@ -14,13 +14,17 @@ from backend.audio.reference import analyze
 from backend.audio.engineer import process_audio
 from backend.media.ffmpeg import assemble
 
+from backend.orchestration.priorities import PROVIDERS,LOCAL_TASKS,ACTIVE_STATUSES,validate_order,order_for
+
+class PriorityLockedError(ValueError):pass
+
 SUCCESS={'Completed','Approved'}
 
 class Engine:
     def __init__(self,store,root,settings,adapter=None,handlers=None):
         self.store=store; self.root=Path(root); self.settings=settings; self.adapter=adapter
         self.semaphore=asyncio.Semaphore(settings.max_concurrent_agents); self.running={}; self.wake=asyncio.Event(); self.stopping=False
-        self.handlers=handlers or {}; self.scheduler=None; self._client_session=None; self._kimi_session=None; self.quota=QuotaRouter(); self.quota_poll_interval=10
+        self.handlers=handlers or {}; self.scheduler=None; self._client_session=None; self._kimi_session=None; self.quota=QuotaRouter(self.manual_quota); self.quota_poll_interval=10
     def directory(self,e): return contained(self.root,e)
     def tool(self,name):
         value=self.settings.tools.get(name) or shutil.which(name)
@@ -34,11 +38,46 @@ class Engine:
         if self._kimi_session is None:
             self._kimi_session=KimiSession(self.tool('hc'),self.settings.tools.get('kimi'),self.settings.antigravity_wait_seconds,self.root)
         return self._kimi_session
-    def herdr(self,task=''):
-        if self.adapter: return self.adapter
-        if task=='recording_setup' or self.settings.agent_kind=='kimi': return AntigravityAdapter(self.kimi_session())
-        if self.settings.agent_kind in {'gemini','antigravity'}: return AntigravityAdapter(self.client_session())
-        return HerdrAdapter(self.tool('herdr'),self.settings.agent_kind,self.settings.agent_models.get(task,self.settings.model),[str(Path(self.tool(self.settings.agent_kind)).parent)])
+    def herdr(self,task='',provider=None):
+        if self.adapter:return self.adapter
+        provider=provider or ('kimi' if task=='recording_setup' else self.settings.agent_kind)
+        if provider=='kimi':return AntigravityAdapter(self.kimi_session())
+        if provider in {'gemini','antigravity'}:return AntigravityAdapter(self.client_session())
+        return HerdrAdapter(self.tool('herdr'),provider,self.settings.agent_models.get(task,self.settings.model),[str(Path(self.tool(provider)).parent)])
+    def manual_quota(self,provider):
+        rows=self.store.rows('SELECT data FROM cache WHERE key=?',('agent-quota:'+provider,))
+        return json.loads(rows[0]['data']) if rows else None
+    def set_manual_quota(self,provider,value,minutes=15):
+        if provider not in PROVIDERS:raise ValueError('Unknown agent')
+        if value is None:self.store.execute('DELETE FROM cache WHERE key=?',('agent-quota:'+provider,))
+        else:
+            import math
+            if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value) or not 0<=value<=100:raise ValueError('Remaining quota must be a percentage from 0 to 100')
+            if isinstance(minutes,bool) or not isinstance(minutes,(int,float)) or not math.isfinite(minutes) or not 1<=minutes<=60:raise ValueError('Manual quota validity must be 1–60 minutes')
+            now=time.time();data={'remaining_percent':value,'reported_at':now,'expires_at':now+minutes*60}
+            self.store.execute('INSERT OR REPLACE INTO cache VALUES(?,?,?)',('agent-quota:'+provider,json.dumps(data),now))
+        self.quota.latest.pop(provider,None);self.wake.set()
+    def priorities_locked(self,e,n):
+        return (e,n) in self.running or self.store.task(e,n)['status'] in ACTIVE_STATUSES
+    def set_priorities(self,e,n,order):
+        if n not in DAG or n in GATES:raise ValueError('Choose an executable step; approval belongs to you')
+        order=validate_order(order);config=self.store.config(e)
+        if self.priorities_locked(e,n):raise PriorityLockedError('Stop the active step before changing its agent priorities')
+        config['agent_priorities']={**config.get('agent_priorities',{}),n:order}
+        self.store.execute('UPDATE episodes SET config=? WHERE id=?',(json.dumps(config),e))
+        self.store.log(e,n,'Agent priority saved for the next run: '+' → '.join(order));self.wake.set()
+        return order
+    async def select_provider(self,e,n,order):
+        waiting=False
+        while True:
+            provider=await self.quota.choose(order,self.settings.tools.get('codex') or shutil.which('codex'))
+            if provider:
+                self.store.update(e,n,'Running');return provider
+            self.store.update(e,n,'Waiting for quota')
+            if not waiting:
+                self.store.log(e,n,'No agent in this step priority has a verified remaining quota of at least 5%. No prompt sent. Refresh quota or enter a recent measured value in Agent balances; cancel the step to edit its priority.')
+                waiting=True
+            await asyncio.sleep(self.quota_poll_interval)
     def create(self,config):
         e=uuid.uuid4().hex; self.directory(e).mkdir(parents=True)
         self.store.execute('INSERT INTO episodes VALUES(?,?,?)',(e,json.dumps(config),time.time()))
@@ -50,10 +89,8 @@ class Engine:
         if not list((self.directory(e)/'references').glob('*')): raise ValueError('Add at least one visual reference')
         # Starting does not hide missing dependencies behind successful mock results.
         for tool in ('ffmpeg','ffprobe','yt-dlp','unity'): self.tool(tool)
-        await self.herdr().check()
+        if self.adapter:await self.adapter.check()
         if not self.settings.vision_enabled: raise ValueError('Enable image-capable agent support in Settings after verifying your model can inspect local images')
-        if self.settings.agent_kind in {'gemini','antigravity'}:
-            await self.client_session().prepare()
         self.store.log(e,'system','Production started')
         self.store.execute("INSERT OR REPLACE INTO cache VALUES(?,?,?)",('started:'+e,'true',time.time()))
         self.wake.set()
@@ -62,7 +99,7 @@ class Engine:
         for row in self.store.rows('SELECT id FROM episodes'):
             for name in DAG:self.store.execute('INSERT OR IGNORE INTO tasks(episode,name) VALUES(?,?)',(row['id'],name))
         # Never kill or trust a saved PID. Reconcile only the persisted Herdr identity.
-        for t in self.store.rows("SELECT * FROM tasks WHERE status IN ('Running','Waiting for Client','Waiting for CLI','Waiting for Permission')"):
+        for t in self.store.rows("SELECT * FROM tasks WHERE status IN ('Running','Waiting for Client','Waiting for CLI','Waiting for Permission','Waiting for quota')"):
             e,n=t['episode'],t['name']; data=json.loads(t['data']); identity=data.get('identity')
             if identity and identity.get('owned') is False:
                 message='Client task interrupted by restart. Its user-owned pane was left untouched; reconnect the Client-launched session and retry.'
@@ -103,7 +140,14 @@ class Engine:
             context=PROCESS_OBSERVER.set(observe)
             try:
                 for dependency in DAG[n]: self.verify_artifacts(e,dependency)
+                preparation=None
+                if n in LOCAL_TASKS and n not in self.handlers:
+                    c=self.store.config(e)
+                    preparation=await self.ask(e,n,'Prepare a brief execution/check plan for the local pipeline step '+n+'. Episode parameters: '+json.dumps({key:c.get(key) for key in ('style','duration_minutes','recording_minutes','resolution','fps','audio_mode')})+'. The application runs the fixed local tools after your response. Do not execute tools, download, render, launch agents, alter files other than the required JSON, change settings or approve anything. Propose checks without claiming they already passed or that you inspected audio/images.',StepPreparation)
+                    if preparation['result']['task']!=n:raise ValueError('Agent preparation references another step')
                 data=await self.dispatch_with_budget(e,n)
+                if preparation:
+                    data={**(data or {}),'assistant_plan':preparation['result'],'artifacts':list(dict.fromkeys(preparation['artifacts']+(data or {}).get('artifacts',[])))}
                 data=data or {}
                 data['artifact_checksums']={name:checksum(contained(self.directory(e),name)) for name in data.get('artifacts',[]) if contained(self.directory(e),name).is_file()}
                 t=self.store.task(e,n); self.store.update(e,n,'Completed',data={**t['data'],**(data or {})})
@@ -118,7 +162,7 @@ class Engine:
                 self.wake.set()
     async def dispatch_with_budget(self,e,n,budget=14400):
         operation=asyncio.create_task(self.dispatch(e,n));last=time.monotonic()
-        paused={'Waiting for Client','Waiting for CLI','Waiting for Permission'}
+        paused={'Waiting for Client','Waiting for CLI','Waiting for Permission','Waiting for quota'}
         try:
             while True:
                 done,_=await asyncio.wait({operation},timeout=min(.5,max(.001,budget)))
@@ -148,14 +192,16 @@ class Engine:
                 for path in self.store.task(e,dependency)['data'].get('artifacts',[]): snapshot[path]=checksum(contained(root,path))
             identity={**identity,'input_checksums':snapshot,'result_schema':schema.__name__}
             data=self.store.task(e,n)['data']; self.store.update(e,n,data={**data,'identity':identity})
-        provider=self.settings.agent_kind
-        if not self.adapter and n!='recording_setup':
-            selected=await self.quota.choose(provider,self.settings.tools.get('codex') or shutil.which('codex'))
-            if selected=='kimi':
-                self.store.log(e,n,'Using Kimi: primary remaining quota is below 5% or cannot be verified. See Settings quota status; unknown is not treated as a full balance.')
-                adapter=AntigravityAdapter(self.kimi_session())
-            else: adapter=self.herdr(n)
-        else: adapter=self.herdr(n)
+        order=order_for(self.store.config(e),self.settings.agent_kind,n)
+        routing=self.store.task(e,n)['data']
+        self.store.update(e,n,data={**routing,'priority_snapshot':order,'selected_provider':None,'identity':None,'previous_identities':[*routing.get('previous_identities',[]),*([routing['identity']] if routing.get('identity') else [])][-20:]})
+        provider=None if self.adapter else await self.select_provider(e,n,order)
+        adapter=self.adapter or self.herdr(n,provider)
+        if provider:
+            routing=self.store.task(e,n)['data'];history=list(routing.get('agent_selections',[]))
+            history.append({'provider':provider,'time':time.time(),'quota':dict(self.quota.latest.get(provider,{}))})
+            self.store.update(e,n,data={**routing,'selected_provider':provider,'agent_selections':history})
+            self.store.log(e,n,'Selected '+provider+' by step priority (verified quota ≥5%)')
         def connect_callbacks(adapter):
             if not isinstance(adapter,AntigravityAdapter):return
             def waiting():
@@ -186,16 +232,20 @@ class Engine:
                 done,_=await asyncio.wait({operation},timeout=self.quota_poll_interval)
                 if done:
                     data=await operation;break
-                if not self.adapter and provider=='codex' and isinstance(adapter,HerdrAdapter):
+                if not self.adapter and provider:
                     remaining=await self.quota.read(provider,self.settings.tools.get('codex') or shutil.which('codex'))
                     if remaining is not None and remaining>=5:continue
+                    # Do not send to a second agent until the first task has verifiably stopped.
+                    if operation.done():data=await operation;break
                     identity=self.store.task(e,n)['data'].get('identity')
-                    if not identity:continue
-                    # A handoff starts only after the owned primary pane was closed successfully.
-                    if await adapter.cancel(identity) is not True:raise RuntimeError('Cannot verify primary CLI stopped; Kimi handoff was not started')
+                    if identity and await adapter.cancel(identity) is not True:raise RuntimeError('Cannot verify active CLI stopped; no fallback prompt was sent. Inspect its pane and retry after stopping it.')
                     operation.cancel();await asyncio.gather(operation,return_exceptions=True)
-                    self.store.log(e,n,'Primary quota fell below 5% or became unavailable. Primary pane stopped; continuing the task in Kimi with the same verified source files.')
-                    adapter=AntigravityAdapter(self.kimi_session());connect_callbacks(adapter)
+                    self.store.log(e,n,'Active agent quota is below 5% or unknown. Its prompt was stopped; selecting the first eligible agent in this step priority.')
+                    provider=await self.select_provider(e,n,order)
+                    adapter=self.herdr(n,provider);connect_callbacks(adapter)
+                    routing=self.store.task(e,n)['data'];history=list(routing.get('agent_selections',[]))
+                    history.append({'provider':provider,'time':time.time(),'quota':dict(self.quota.latest.get(provider,{}))})
+                    self.store.update(e,n,data={**routing,'selected_provider':provider,'agent_selections':history})
                     result=f'{n}-{uuid.uuid4().hex}.json'
                     operation=asyncio.create_task(adapter.launch(root,full_prompt,result,save))
             checked=schema.model_validate(data).model_dump()

@@ -7,8 +7,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 from backend.models.schema import EpisodeInput,Settings,MusicBrief
 from backend.storage.db import Store
-from backend.orchestration.engine import Engine
-from backend.orchestration.workflow import DAG
+from backend.orchestration.engine import Engine,PriorityLockedError
+from backend.orchestration.workflow import DAG,GATES
+from backend.orchestration.priorities import LOCAL_TASKS,PROVIDERS,order_for
 from backend.orchestration.herdr_adapter import HerdrAdapter
 from backend.integrations.process import contained,run,checksum
 from backend.integrations.unity import discover
@@ -134,7 +135,7 @@ async def episodes():
         config=json.loads(row['config']); tasks=store.rows('SELECT * FROM tasks WHERE episode=?',(row['id'],))
         for task in tasks: task['data']=json.loads(task['data'])
         statuses=[t['status'] for t in tasks]
-        status='Completed' if all(s in ('Completed','Approved') for s in statuses) else next((s for s in ('Failed','Waiting for Permission','Waiting for CLI','Waiting for Client','Running','Waiting for Approval','Cancelled') if s in statuses),'Pending')
+        status='Completed' if all(s in ('Completed','Approved') for s in statuses) else next((s for s in ('Failed','Waiting for quota','Waiting for Permission','Waiting for CLI','Waiting for Client','Running','Waiting for Approval','Cancelled') if s in statuses),'Pending')
         output.append({'id':row['id'],'config':config,'created':row['created'],'status':status,'progress':sum(s in ('Completed','Approved') for s in statuses)/len(tasks),'tasks':tasks})
     return output
 
@@ -145,6 +146,10 @@ async def create(config:EpisodeInput): return {'id':engine.create(config.model_d
 async def detail(e:str):
     config=store.config(e); root=engine.directory(e)
     tasks=[store.task(e,n) for n in DAG]
+    for task in tasks:
+        name=task['name'];task['agent_priorities']=[] if name in GATES else order_for(config,engine.settings.agent_kind,name)
+        task['priority_locked']=engine.priorities_locked(e,name)
+        task['execution_kind']='approval' if name in GATES else 'assisted_local' if name in LOCAL_TASKS else 'agent'
     artifacts=[]
     for t in tasks:
         for file in t['data'].get('artifacts',[]):
@@ -155,14 +160,43 @@ async def detail(e:str):
     names=json.loads(manifest.read_text()) if manifest.exists() else []
     for path in names:
         if contained(root,path).is_file(): refs.append(path)
-    return {'id':e,'config':config,'tasks':tasks,'logs':store.rows('SELECT * FROM logs WHERE episode=? ORDER BY id DESC LIMIT 300',(e,)),'artifacts':artifacts,'references':refs,'music':[str(p.relative_to(root)) for p in sorted((root/'music').glob('*'))]}
+    return {'id':e,'config':config,'tasks':tasks,'logs':store.rows('SELECT * FROM logs WHERE episode=? ORDER BY id DESC LIMIT 300',(e,)),'artifacts':artifacts,'references':refs,'music':[str(p.relative_to(root)) for p in sorted((root/'music').glob('*'))],'workflow':DAG}
 
 @app.put('/episodes/{e}/recording')
 async def recording_duration(e:str,request:Request):
     await engine.set_recording_duration(e,(await request.json()).get('minutes'));return {'ok':True}
 
+@app.put('/episodes/{e}/tasks/{n}/priorities')
+async def task_priorities(e:str,n:str,request:Request):
+    try:order=engine.set_priorities(e,n,(await request.json()).get('order'))
+    except PriorityLockedError as exc:raise HTTPException(409,str(exc)) from None
+    return {'order':order}
+
 @app.get('/agents/quotas')
-async def agent_quotas():return {'providers':engine.quota.latest,'unknown_policy':'Use Kimi when the primary balance cannot be verified','threshold_percent':5}
+async def agent_quotas(refresh:bool=False):
+    import asyncio
+    if refresh:
+        engine.quota.latest.clear()
+        await asyncio.gather(*(engine.quota.read(provider,engine.settings.tools.get('codex') or shutil.which('codex')) for provider in PROVIDERS))
+    now=time.time();providers={}
+    for provider in PROVIDERS:
+        value=dict(engine.quota.latest.get(provider,{'remaining_percent':None,'source':'unavailable','checked_at':None,'expires_at':None}))
+        if value['source']=='unavailable':
+            manual=engine.manual_quota(provider)
+            if manual and manual.get('expires_at',0)>now:value.update(remaining_percent=manual['remaining_percent'],source='manual',checked_at=manual['reported_at'],expires_at=manual['expires_at'])
+        if value['source']=='codex-account-rate-limits' and now-(value.get('checked_at') or 0)>30:value.update(remaining_percent=None,source='stale')
+        if value.get('expires_at') and value['expires_at']<=now:value.update(remaining_percent=None,source='expired')
+        value['eligible']=value['remaining_percent'] is not None and value['remaining_percent']>=5
+        providers[provider]=value
+    return {'providers':providers,'unknown_policy':'Skip unknown balances; wait if no agent has verified quota ≥5%','threshold_percent':5}
+
+@app.put('/agents/quotas/{provider}')
+async def manual_agent_quota(provider:str,request:Request):
+    data=await request.json()
+    if 'remaining_percent' not in data:raise ValueError('Supply remaining_percent or null to clear')
+    engine.set_manual_quota(provider,data['remaining_percent'],data.get('validity_minutes',15))
+    await engine.quota.read(provider,engine.settings.tools.get('codex') or shutil.which('codex'))
+    return {'ok':True}
 
 @app.get('/kimi/status')
 async def kimi_status():return await engine.kimi_session().status()

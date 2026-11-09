@@ -231,12 +231,14 @@ class AntigravityAdapter:
                 self.active=None; self.session.in_flight=False
     async def cancel(self,identity):
         # A new adapter or a restored task has no right to interrupt a user's session.
-        if not self.active or identity!=self.active: return
+        if not self.active or identity!=self.active: return False
         try:
             terminal=await self.session.verify(identity)
-            if self.session.word(terminal)=='working':
+            if self.session.word(terminal) in {'working','blocked'}:
                 await self.session.command('interrupt',identity['pane'],'--timeout','5','--json')
-        except (RuntimeError,ValueError,KeyError,OSError): pass
+                terminal=await self.session.verify(identity)
+            return self.session.word(terminal) in {'idle','done'}
+        except (RuntimeError,ValueError,KeyError,OSError): return False
     async def logs(self,identity):
         await self.session.verify(identity)
         return await self.session.command('read',identity['pane'],'--lines','0',raw=True)

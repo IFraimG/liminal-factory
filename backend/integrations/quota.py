@@ -40,14 +40,27 @@ async def codex_limits(executable):
             except asyncio.TimeoutError:proc.kill();await proc.wait()
 
 class QuotaRouter:
-    def __init__(self):self.latest={}
+    def __init__(self,manual_reader=None):
+        self.latest={};self.manual_reader=manual_reader or (lambda provider:None);self.locks={}
     async def read(self,provider,executable=None):
-        try:remaining=await codex_limits(executable) if provider=='codex' and executable else None
-        except (OSError,RuntimeError,ValueError,TimeoutError,ConnectionError):remaining=None
-        self.latest[provider]={'remaining_percent':remaining,'checked_at':time.time(),'source':'codex-account-rate-limits' if remaining is not None else 'unavailable'}
-        return remaining
-    async def choose(self,provider,executable=None):
-        if provider=='kimi':return 'kimi'
-        remaining=await self.read(provider,executable)
-        # A missing signal must not spend an unknown primary balance.
-        return 'kimi' if remaining is None or remaining<5 else provider
+        lock=self.locks.setdefault(provider,asyncio.Lock())
+        async with lock:
+            now=time.time();cached=self.latest.get(provider)
+            if cached and now-cached['checked_at']<5 and (cached.get('expires_at') or now+1)>now:return cached['remaining_percent']
+            try:remaining=await codex_limits(executable) if provider=='codex' and executable else None
+            except (OSError,RuntimeError,ValueError,TimeoutError,ConnectionError):remaining=None
+            source='codex-account-rate-limits' if remaining is not None else 'unavailable';expires=None
+            if remaining is None:
+                manual=self.manual_reader(provider)
+                if manual and manual.get('expires_at',0)>time.time():
+                    value=manual.get('remaining_percent')
+                    if isinstance(value,(int,float)) and not isinstance(value,bool) and math.isfinite(value) and 0<=value<=100:
+                        remaining=value;source='manual';expires=manual['expires_at']
+            self.latest[provider]={'remaining_percent':remaining,'checked_at':time.time(),'source':source,'expires_at':expires}
+            return remaining
+    async def choose(self,order,executable=None):
+        # Unknown balances and values below 5% are ineligible for every provider, including Kimi.
+        for provider in order:
+            remaining=await self.read(provider,executable)
+            if remaining is not None and remaining>=5:return provider
+        return None
