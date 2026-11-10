@@ -48,7 +48,7 @@ def test_approval_stays_human(configured):
         with pytest.raises(ValueError):engine.set_priorities(eid,name,ORDER)
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('balances,expected',[({'antigravity':4.9,'kimi':5,'codex':95},'kimi'),({'antigravity':5,'kimi':90,'codex':100},'antigravity'),({'antigravity':None,'kimi':4,'codex':20},'antigravity'),({'antigravity':4,'kimi':4,'codex':20},'codex'),({'antigravity':4,'kimi':None,'codex':4.9},None)])
+@pytest.mark.parametrize('balances,expected',[({'antigravity':4.9,'kimi':5,'codex':95},'kimi'),({'antigravity':5,'kimi':90,'codex':100},'antigravity'),({'antigravity':None,'kimi':4,'codex':20},'antigravity'),({'antigravity':4,'kimi':4,'codex':20},'codex'),({'antigravity':4,'kimi':None,'codex':4.9},'kimi')])
 async def test_first_eligible_not_richest_agent(balances,expected,monkeypatch):
     router=QuotaRouter();seen=[]
     async def read(provider,executable):seen.append(provider);return balances[provider]
@@ -57,7 +57,7 @@ async def test_first_eligible_not_richest_agent(balances,expected,monkeypatch):
     assert seen==ORDER[:ORDER.index(expected)+1] if expected else seen==ORDER
 
 @pytest.mark.asyncio
-async def test_expired_manual_balances_are_not_eligible(configured,monkeypatch):
+async def test_expired_manual_balances_become_unknown_and_allowed(configured,monkeypatch):
     engine,store,eid=configured
     async def unavailable(_):return None
     monkeypatch.setattr('backend.integrations.quota.codex_limits',unavailable)
@@ -65,11 +65,11 @@ async def test_expired_manual_balances_are_not_eligible(configured,monkeypatch):
     assert await engine.quota.choose(['kimi'])=='kimi'
     reported=engine.manual_quota('kimi');reported['expires_at']=time.time()-1
     store.execute('UPDATE cache SET data=? WHERE key=?',(json.dumps(reported),'agent-quota:kimi'));engine.quota.latest.clear()
-    assert await engine.quota.choose(['kimi']) is None
+    assert await engine.quota.choose(['kimi'])=='kimi'
     engine.set_manual_quota('kimi',80);new=Engine(store,engine.root,engine.settings)
     assert await new.quota.choose(['kimi'])=='kimi'
     engine.set_manual_quota('kimi',None)
-    assert await engine.quota.choose(['kimi']) is None
+    assert await engine.quota.choose(['kimi'])=='kimi'
 
 @pytest.mark.asyncio
 async def test_waiting_quota_sends_nothing_and_resumes_on_fresh_report(configured,monkeypatch):
@@ -77,6 +77,8 @@ async def test_waiting_quota_sends_nothing_and_resumes_on_fresh_report(configure
     async def unavailable(_):return None
     monkeypatch.setattr('backend.integrations.quota.codex_limits',unavailable)
     engine.set_manual_quota('antigravity',4)
+    engine.set_manual_quota('kimi',4)
+    engine.set_manual_quota('codex',4)
     pending=asyncio.create_task(engine.select_provider(eid,'metadata',ORDER))
     try:
         for _ in range(100):

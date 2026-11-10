@@ -40,7 +40,7 @@ async def codex_limits(executable):
             except asyncio.TimeoutError:proc.kill();await proc.wait()
 
 def eligible(provider,remaining):
-    return (provider=='antigravity' and remaining is None) or (remaining is not None and remaining>=5)
+    return remaining is None or remaining>=5
 
 class QuotaRouter:
     def __init__(self,manual_reader=None):
@@ -62,7 +62,7 @@ class QuotaRouter:
             self.latest[provider]={'remaining_percent':remaining,'checked_at':time.time(),'source':source,'expires_at':expires}
             return remaining
     async def choose(self,order,executable=None):
-        # Argon alone is allowed with unknown quota by the user's explicit policy.
+        # Unknown is not a measured low balance: respect the configured order.
         for provider in order:
             remaining=await self.read(provider,executable)
             if eligible(provider,remaining):return provider

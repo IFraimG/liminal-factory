@@ -140,7 +140,7 @@ class SceneMaterial(BaseModel):
     roughness: float=Field(default=.85,ge=0,le=1)
     metallic: float=Field(default=0,ge=0,le=1)
     emission: float=Field(default=0,ge=0,le=5)
-    texture: Literal['flat','plaster','concrete','brick','wood','metal','fabric','snow','asphalt']='flat'
+    texture: Literal['flat','plaster','concrete','brick','wood','metal','fabric','snow','asphalt','bark','panel']='flat'
     texture_scale: float=Field(default=1,gt=0,le=50)
     @field_validator('color')
     @classmethod
@@ -148,10 +148,16 @@ class SceneMaterial(BaseModel):
         if any(not 0<=x<=1 for x in v):raise ValueError('RGB must be within 0..1')
         return v
 
+class MeshVertex(BaseModel):
+    model_config={'extra':'forbid'}
+    x: float=Field(ge=-.5,le=.5,allow_inf_nan=False)
+    y: float=Field(ge=-.5,le=.5,allow_inf_nan=False)
+    z: float=Field(ge=-.5,le=.5,allow_inf_nan=False)
+
 class SceneObject(BaseModel):
     model_config={'extra':'forbid'}
     name: str=Field(min_length=1,max_length=120)
-    primitive: Literal['box','sphere','cylinder','capsule','quad']
+    primitive: Literal['box','sphere','cylinder','capsule','quad','bare_tree','mesh']
     position: list[float]=Field(min_length=3,max_length=3)
     scale: list[float]=Field(min_length=3,max_length=3)
     rotation: list[float]=Field(default_factory=lambda:[0,0,0],min_length=3,max_length=3)
@@ -161,6 +167,8 @@ class SceneObject(BaseModel):
     repeat: list[int]=Field(default_factory=lambda:[1,1,1],min_length=3,max_length=3)
     step: list[float]=Field(default_factory=lambda:[0,0,0],min_length=3,max_length=3)
     jitter: list[float]=Field(default_factory=lambda:[0,0,0],min_length=3,max_length=3)
+    vertices: list[MeshVertex]=Field(default_factory=list,max_length=256)
+    triangles: list[int]=Field(default_factory=list,max_length=1536)
     @model_validator(mode='after')
     def bounded(self):
         import math
@@ -169,6 +177,11 @@ class SceneObject(BaseModel):
         if any(not math.isfinite(x) or abs(x)>360 for x in self.rotation):raise ValueError('Rotation must be finite degrees')
         if any(not 1<=x<=100 for x in self.repeat) or math.prod(self.repeat)>2000:raise ValueError('Repeat budget exceeded')
         if any(abs(self.position[i])+abs(self.step[i])*(self.repeat[i]-1)+abs(self.jitter[i])>500 for i in range(3)):raise ValueError('Repeated geometry extends beyond 500m')
+        if self.primitive=='mesh':
+            if len(self.vertices)<3 or len(self.triangles)<3 or len(self.triangles)%3:raise ValueError('Mesh needs vertices and complete triangles')
+            if any(i<0 or i>=len(self.vertices) for i in self.triangles):raise ValueError('Mesh triangle index out of bounds')
+            if any(len(set(self.triangles[i:i+3]))!=3 for i in range(0,len(self.triangles),3)):raise ValueError('Mesh triangles must have distinct vertex indices')
+        elif self.vertices or self.triangles:raise ValueError('Mesh data is only valid for mesh objects')
         return self
 
 class SceneLight(BaseModel):
@@ -222,7 +235,8 @@ class SceneSpec(BaseModel):
         if any(not 1<=x<=200 for x in self.weather_area):raise ValueError('Weather area must be 1..200m')
         names=[m.name for m in self.custom_materials]
         if len(names)!=len(set(names)):raise ValueError('Material names must be unique')
-        if sum(math.prod(o.repeat) for o in self.custom_objects)>6000:raise ValueError('Scene object budget exceeds 6000 instances')
+        if sum(math.prod(o.repeat)*(32 if o.primitive=='bare_tree' else 1) for o in self.custom_objects)>6000:raise ValueError('Scene object budget exceeds 6000 instances including tree branches')
+        if sum(len(o.vertices) for o in self.custom_objects)>12000:raise ValueError('Scene mesh vertex budget exceeds 12000')
         if any(o.material not in names or (o.alternate_material and o.alternate_material not in names) for o in self.custom_objects):raise ValueError('Object uses an undefined material')
         if self.scene_type=='custom_scene' and (not self.custom_objects or not self.custom_materials):raise ValueError('Custom scene needs actual geometry and materials')
         return self

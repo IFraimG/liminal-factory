@@ -227,7 +227,7 @@ class Engine:
             routing=self.store.task(e,n)['data'];history=list(routing.get('agent_selections',[]))
             history.append({'provider':provider,'time':time.time(),'quota':dict(self.quota.latest.get(provider,{}))})
             self.store.update(e,n,data={**routing,'selected_provider':provider,'agent_selections':history})
-            self.store.log(e,n,'Selected '+provider+' by step priority: '+('unknown Argon quota allowed by policy' if self.quota.latest.get(provider,{}).get('remaining_percent') is None and provider=='antigravity' else 'verified quota ≥5%'))
+            self.store.log(e,n,'Selected '+provider+' by step priority: '+('unknown quota allowed by policy' if self.quota.latest.get(provider,{}).get('remaining_percent') is None else 'verified quota ≥5%'))
         def connect_callbacks(adapter):
             if isinstance(adapter,CodexCoreAdapter):
                 adapter.on_state=lambda value:self.store.update(e,n,'Waiting for Permission' if value=='blocked' else 'Running')
@@ -272,7 +272,7 @@ class Engine:
                     identity=self.store.task(e,n)['data'].get('identity')
                     if identity and await adapter.cancel(identity) is not True:raise RuntimeError('Cannot verify active CLI stopped; no fallback prompt was sent. Inspect its pane and retry after stopping it.')
                     operation.cancel();await asyncio.gather(operation,return_exceptions=True)
-                    self.store.log(e,n,'Active agent quota is below 5% or unknown. Its prompt was stopped; selecting the first eligible agent in this step priority.')
+                    self.store.log(e,n,'Active agent quota is below 5%. Its prompt was stopped; selecting the first eligible agent in this step priority.')
                     provider=await self.select_provider(e,n,order)
                     adapter=self.herdr(n,provider,model=revision_agent.get('model'),effort=revision_agent.get('effort','medium')) if revision_agent else self.herdr(n,provider)
                     connect_callbacks(adapter)

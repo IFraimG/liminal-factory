@@ -9,7 +9,7 @@ from backend.storage.db import Store
 from backend.orchestration.engine import Engine
 from backend.models.schema import Settings
 
-@pytest.mark.parametrize('used,selected',[(94,'codex'),(95,'codex'),(95.01,'kimi'),(100,'kimi'),(None,'kimi')])
+@pytest.mark.parametrize('used,selected',[(94,'codex'),(95,'codex'),(95.01,'kimi'),(100,'kimi'),(None,'codex')])
 @pytest.mark.asyncio
 async def test_quota_boundary_and_unknown(monkeypatch,used,selected):
     async def read(_):return None if used is None else 100-used

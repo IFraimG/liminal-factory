@@ -229,7 +229,7 @@ async def agent_quotas(refresh:bool=False):
         if value.get('expires_at') and value['expires_at']<=now:value.update(remaining_percent=None,source='expired')
         value['eligible']=eligible(provider,value['remaining_percent'])
         providers[provider]=value
-    return {'providers':providers,'unknown_policy':'Unknown Argon quota is allowed; other unknown balances are skipped','threshold_percent':5}
+    return {'providers':providers,'unknown_policy':'Unknown quota is allowed for all agents','threshold_percent':5}
 
 @app.put('/agents/quotas/{provider}')
 async def manual_agent_quota(provider:str,request:Request):

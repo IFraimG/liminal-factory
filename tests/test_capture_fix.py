@@ -14,10 +14,10 @@ def test_default_argon_before_kimi_and_explicit_order_preserved(provider,task):
     manual=['kimi','codex','antigravity']
     assert order_for({'agent_priorities':{task:manual}},provider,task)==manual
 
-def test_unknown_argon_is_allowed_without_fabricating_percent():
+def test_unknown_balances_are_allowed_without_fabricating_percent():
     assert eligible('antigravity',None)
-    assert not eligible('kimi',None)
-    assert not eligible('codex',None)
+    assert eligible('kimi',None)
+    assert eligible('codex',None)
     assert not eligible('antigravity',4.99)
     assert eligible('antigravity',5)
 
@@ -65,7 +65,8 @@ async def test_missing_approved_scene_does_not_create_new_project(tmp_path):
         await Unity('/Unity').render(tmp_path,{},False)
 
 @pytest.mark.asyncio
-async def test_running_argon_unknown_quota_is_not_interrupted(tmp_path,monkeypatch):
+@pytest.mark.parametrize("provider",["codex","antigravity","kimi"])
+async def test_running_unknown_quota_is_not_interrupted(tmp_path,monkeypatch,provider):
     from backend.orchestration.engine import Engine
     from backend.storage.db import Store
     from backend.models.schema import Settings,MusicBrief
@@ -78,7 +79,7 @@ async def test_running_argon_unknown_quota_is_not_interrupted(tmp_path,monkeypat
             return {'brief':'Original ambient composition','prompts':['one','two']}
         async def cancel(self,identity):cancelled.append(identity);return True
         async def logs(self,identity):return ''
-    async def choose(*args):return 'antigravity'
+    async def choose(*args):return provider
     async def read(*args):return None
     monkeypatch.setattr(engine.quota,'choose',choose);monkeypatch.setattr(engine.quota,'read',read)
     monkeypatch.setattr(engine,'herdr',lambda *args:Adapter())
