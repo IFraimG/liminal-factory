@@ -110,10 +110,42 @@ public static class LiminalScene {
         }
     }
     [Serializable] public class Surface {public string name,texture="flat";public float[] color;public float roughness=.85f,metallic=0,emission=0,texture_scale=1;}
-    [Serializable] public class Part {public string name,primitive,material,alternate_material="";public float[] position,scale,rotation,step,jitter;public int[] repeat;public float alternate_probability=0;}
+    [Serializable] public class Vertex {public float x,y,z;}
+    [Serializable] public class Part {public string name,primitive,material,alternate_material="";public float[] position,scale,rotation,step,jitter;public int[] repeat;public float alternate_probability=0;public Vertex[] vertices;public int[] triangles;}
     [Serializable] public class Illumination {public string name,kind;public float[] position,rotation,color;public float intensity,range=15,spot_angle=60;}
     static Vector3 V(float[] a) {return new Vector3(a[0],a[1],a[2]);}
     static Color C(float[] a) {return new Color(a[0],a[1],a[2],1);}
+    static Mesh CustomMesh(Part part,int id) {
+        var mesh=new Mesh();mesh.name=part.name+" mesh";
+        var vertices=new Vector3[part.vertices.Length];var uv=new Vector2[vertices.Length];
+        for(int i=0;i<vertices.Length;i++) {var v=part.vertices[i];vertices[i]=new Vector3(v.x,v.y,v.z);uv[i]=new Vector2(v.x+.5f,v.y+.5f);}
+        mesh.vertices=vertices;mesh.triangles=part.triangles;mesh.uv=uv;mesh.RecalculateNormals();mesh.RecalculateBounds();
+        AssetDatabase.CreateAsset(mesh,$"Assets/LiminalGenerated/custommesh{id}.asset");return mesh;
+    }
+    // A bounded, deterministic, branching tree built from persisted Unity primitives.
+    // Local geometry fits approximately within a unit box; scale controls the crown and height.
+    static void TreeBranch(Transform parent,Vector3 a,Vector3 b,float radius,Material material,string name) {
+        var part=GameObject.CreatePrimitive(PrimitiveType.Cylinder);part.name=name;
+        part.transform.SetParent(parent,false);part.transform.localPosition=(a+b)*.5f;
+        part.transform.localRotation=Quaternion.FromToRotation(Vector3.up,(b-a).normalized);
+        part.transform.localScale=new Vector3(radius*2,Vector3.Distance(a,b)*.5f,radius*2);
+        part.GetComponent<Renderer>().sharedMaterial=material;part.isStatic=true;
+        var collider=part.GetComponent<Collider>();if(collider)UnityEngine.Object.DestroyImmediate(collider);
+    }
+    static void BareTree(string name,Vector3 position,Vector3 scale,Quaternion rotation,Material material) {
+        var tree=new GameObject(name);tree.transform.position=position;tree.transform.rotation=rotation;tree.transform.localScale=scale;tree.isStatic=true;
+        TreeBranch(tree.transform,new Vector3(0,-.5f,0),new Vector3(0,.48f,0),.025f,material,"Trunk");
+        for(int i=0;i<10;i++) {
+            float angle=i*2.399963f+UnityEngine.Random.Range(-.16f,.16f);
+            var direction=new Vector3(Mathf.Cos(angle),0,Mathf.Sin(angle));
+            float height=-.18f+i*.06f,reach=UnityEngine.Random.Range(.26f,.43f)*(1-i*.045f);
+            Vector3 start=new Vector3(0,height,0),middle=start+direction*reach*.55f+Vector3.up*.14f,end=start+direction*reach+Vector3.up*.28f;
+            TreeBranch(tree.transform,start,middle,.011f,material,"Branch");
+            TreeBranch(tree.transform,middle,end,.005f,material,"Twig");
+            Vector3 side=Quaternion.AngleAxis(36,Vector3.up)*direction;
+            TreeBranch(tree.transform,middle,middle+side*reach*.45f+Vector3.up*.20f,.004f,material,"Fork");
+        }
+    }
     static void Generic(Config c) {
         RenderSettings.ambientLight=C(c.ambient_color);RenderSettings.fogColor=C(c.fog_color);RenderSettings.fogDensity=c.fog_density;
         QualitySettings.pixelLightCount=8;QualitySettings.shadows=ShadowQuality.All;QualitySettings.shadowResolution=ShadowResolution.Medium;
@@ -132,19 +164,25 @@ public static class LiminalScene {
                     if(surface.texture=="fabric")detail*=((x+y)%3==0?.8f:1f);
                     if(surface.texture=="metal")detail=.9f+coarse*.08f;
                     if(surface.texture=="snow")detail=.9f+coarse*.08f;
+                    if(surface.texture=="bark")detail=.5f+.32f*Mathf.PerlinNoise(x*.12f,y*.018f)+.12f*Mathf.Abs(Mathf.Sin(x*.7f+coarse*4));
+                    if(surface.texture=="panel") {detail=.7f+coarse*.22f;if(x%64<2||y%64<2)detail*=.55f;}
                     tex.SetPixel(x,y,new Color(n*detail,n*detail,n*detail));
                 }
                 tex.Apply();AssetDatabase.CreateAsset(tex,$"Assets/LiminalGenerated/detail{materialId}.asset");m.mainTexture=tex;m.mainTextureScale=Vector2.one*surface.texture_scale;
             }
             materials.Add(surface.name,m);
         }
+        int meshId=0;
         foreach(var part in c.custom_objects) {
             var primitive=part.primitive=="sphere"?PrimitiveType.Sphere:part.primitive=="cylinder"?PrimitiveType.Cylinder:part.primitive=="capsule"?PrimitiveType.Capsule:part.primitive=="quad"?PrimitiveType.Quad:PrimitiveType.Cube;
+            var mesh=part.primitive=="mesh"?CustomMesh(part,meshId++):null;
             for(int x=0;x<part.repeat[0];x++)for(int y=0;y<part.repeat[1];y++)for(int z=0;z<part.repeat[2];z++) {
                 var pos=V(part.position)+Vector3.Scale(new Vector3(x,y,z),V(part.step));
                 pos+=new Vector3(UnityEngine.Random.Range(-part.jitter[0],part.jitter[0]),UnityEngine.Random.Range(-part.jitter[1],part.jitter[1]),UnityEngine.Random.Range(-part.jitter[2],part.jitter[2]));
                 var material=materials[part.material];
                 if(!String.IsNullOrEmpty(part.alternate_material)&&UnityEngine.Random.value<part.alternate_probability)material=materials[part.alternate_material];
+                if(part.primitive=="bare_tree") {BareTree(part.name,pos,V(part.scale),Quaternion.Euler(V(part.rotation)),material);continue;}
+                if(mesh) {var obj=new GameObject(part.name);obj.transform.position=pos;obj.transform.localScale=V(part.scale);obj.transform.rotation=Quaternion.Euler(V(part.rotation));obj.AddComponent<MeshFilter>().sharedMesh=mesh;obj.AddComponent<MeshRenderer>().sharedMaterial=material;obj.isStatic=true;continue;}
                 var o=Shape(primitive,part.name,pos,V(part.scale),material);o.transform.rotation=Quaternion.Euler(V(part.rotation));o.isStatic=true;
                 var collider=o.GetComponent<Collider>();if(collider)UnityEngine.Object.DestroyImmediate(collider);
             }

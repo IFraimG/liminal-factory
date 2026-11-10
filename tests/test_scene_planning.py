@@ -162,3 +162,19 @@ async def test_image_to_unity_refuses_unvalidated_image(tmp_path):
     e=engine.create({'name':'scene','postproduction_enabled':True,'presentation_mode':'image'})
     store.update(e,'image_approval','Waiting for Approval');store.update(e,'image_edit','Completed',data={'image':'image-edits/x/edited.png'})
     with pytest.raises(ValueError,match='validated'):await engine.presentation.send_image_to_unity(e)
+
+
+def test_custom_mesh_and_procedural_tree_validation():
+    data=custom_scene()
+    obj=data['custom_objects'][0]
+    obj.update(primitive='mesh', vertices=[{'x':0,'y':0,'z':0},{'x':.5,'y':0,'z':0},{'x':0,'y':.5,'z':0}],triangles=[0,1,2])
+    spec=SceneSpec(**data)
+    assert spec.custom_objects[0].vertices[1].x==.5
+    obj['triangles']=[0,1,3]
+    with pytest.raises(ValueError,match='index'):SceneSpec(**data)
+    obj['triangles']=[0,1,2];obj['vertices'][0]['x']=.6
+    with pytest.raises(ValueError):SceneSpec(**data)
+    tree=custom_scene();tree['custom_materials'][0]['texture']='bark';tree['custom_objects'][0].update(primitive='bare_tree',repeat=[100,2,1],step=[1,1,0])
+    with pytest.raises(ValueError,match='budget'):SceneSpec(**tree)
+    tree['custom_objects'][0]['repeat']=[2,1,1]
+    assert SceneSpec(**tree).custom_objects[0].primitive=='bare_tree'
