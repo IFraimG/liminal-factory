@@ -235,7 +235,7 @@ class Engine:
             if not isinstance(adapter,AntigravityAdapter):return
             def waiting():
                 self.store.update(e,n,'Waiting for CLI' if isinstance(adapter.session,KimiSession) else 'Waiting for Client')
-                self.store.log(e,n,'Waiting for the dedicated Kimi Herdr pane.' if isinstance(adapter.session,KimiSession) else 'Waiting for Antigravity Client → CLI → your confirmed idle Herdr pane. No direct Gemini/agy launch.')
+                self.store.log(e,n,'Starting or connecting the dedicated Kimi Herdr pane.' if isinstance(adapter.session,KimiSession) else 'Waiting for Antigravity Client → CLI → your confirmed idle Herdr pane. No direct Gemini/agy launch.')
             adapter.on_wait=waiting
             adapter.on_ready=lambda:self.store.update(e,n,'Running')
             def state_changed(state):

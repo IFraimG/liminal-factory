@@ -270,3 +270,8 @@ Apple Developer signing/notarization; test external binaries and Unity licensing
 
 - The Unity builder extends the largest eligible broad, thin, axis-aligned box below the camera with the same material, slightly below its top. `ground_continuation=off` preserves intentional openings; arbitrary meshes, sloped ground and small objects are not selected as terrain. The frame QA prompt asks the agent to report visible sky through ground gaps.
 - On the existing episode spec, read-only inspection identifies `courtyard snow slab` and its `snow` material as the eligible surface. Unit/schema tests and Unity C# compilation pass. This inference alone does not prove what appears in the rendered frame. An isolated Unity render is attempted separately; user episode data is not modified.
+
+## Automatic Kimi session (2026-11-10)
+
+- When an executing task selects Kimi, its adapter connects to the single matching dedicated Herdr session or starts one using the configured executable, episodes directory and K3.1 Pro model. Priority changes and status checks do not launch it. A startup lock and stable terminal name protect against concurrent duplicate launches; existing marked sessions and user permission dialogs are preserved.
+- 258 Python tests pass, including concurrent startup, ambiguous existing sessions, routing and Antigravity tests. The current task was waiting for Kimi; a dedicated Herdr session was started with the established command and the task resumed. Automatic startup in the installed app was not tested against a missing session because doing so would interrupt that active user task.
