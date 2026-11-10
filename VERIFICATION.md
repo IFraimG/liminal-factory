@@ -275,3 +275,8 @@ Apple Developer signing/notarization; test external binaries and Unity licensing
 
 - When an executing task selects Kimi, its adapter connects to the single matching dedicated Herdr session or starts one using the configured executable, episodes directory and K3.1 Pro model. Priority changes and status checks do not launch it. A startup lock and stable terminal name protect against concurrent duplicate launches; existing marked sessions and user permission dialogs are preserved.
 - 258 Python tests pass, including concurrent startup, ambiguous existing sessions, routing and Antigravity tests. The current task was waiting for Kimi; a dedicated Herdr session was started with the established command and the task resumed. Automatic startup in the installed app was not tested against a missing session because doing so would interrupt that active user task.
+
+## Change priorities during Client wait (2026-11-10)
+
+- Unsent, unpinned Waiting for Client tasks allow priority editing. Saving cancels the waiting task before yielding, awaits cancellation, saves the order and requeues the step with existing retry context. Delivered identities and revision-pinned work remain locked. No provider is interrupted after prompt delivery by this action.
+- Tests cover cancellation/requeue, preservation of feedback, delivered-identity locking and the browser save/restart notice. Full suite/build results are recorded in the final delivery report. Active user workflows were not restarted for testing.

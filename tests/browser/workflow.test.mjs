@@ -243,3 +243,14 @@ test('image approval can send the selected image back to Unity',async()=>{
  const view=await mount(React.createElement(ExtendedRelease,{detail,view:'image_approval',onRefresh:async()=>{}}));
  try{await act(()=>button('Use this image to rebuild Unity scene').click());assert.deepEqual(calls,[['/episodes/episode-a/image-to-unity','POST']])}finally{await view.close()}
 });
+
+test('waiting for client allows saving a new order and explains restart',async()=>{
+ const calls=[];globalThis.workflowApi=async(...args)=>{calls.push(args);return {}};
+ const view=await mount(React.createElement(AgentPriorityEditor,{episode:'e',task:{...defaults,name:'metadata',status:'Waiting for Client'},busy:false,onSave:async()=>{}}));
+ try{
+  assert(!button('Move Kimi K3.1 Pro High up').disabled);
+  await act(()=>button('Move Kimi K3.1 Pro High up').click());
+  await act(()=>button('Save agent priority').click());
+  assert.equal(calls.length,1);assert.match(document.body.textContent,/Restarting this step/);
+ }finally{await view.close()}
+});

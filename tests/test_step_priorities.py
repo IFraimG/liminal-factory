@@ -13,7 +13,7 @@ def configured(tmp_path):
     store=Store(tmp_path/'factory.db');engine=Engine(store,tmp_path/'episodes',Settings(agent_kind='codex'))
     eid=engine.create({'name':'priority test','permission':True});return engine,store,eid
 
-@pytest.mark.parametrize('status',sorted(ACTIVE_STATUSES))
+@pytest.mark.parametrize('status',sorted(ACTIVE_STATUSES-{'Waiting for Client'}))
 def test_active_step_locks_order_without_changing_config(configured,status):
     engine,store,eid=configured;before=store.config(eid)
     store.update(eid,'music_brief',status)
@@ -148,3 +148,28 @@ async def test_cancel_waiting_task_unlocks_only_after_it_stops(configured,monkey
         engine.set_priorities(eid,'metadata',ORDER)
         assert store.task(eid,'metadata')['status']=='Cancelled'
     finally:await engine.close()
+
+@pytest.mark.asyncio
+async def test_waiting_client_priority_cancels_unsent_task_and_requeues(configured):
+    engine,store,eid=configured
+    store.update(eid,'audio_reference','Completed')
+    store.update(eid,'music_brief','Waiting for Client',data={'feedback':'keep direction','identity':None})
+    stopped=asyncio.Event()
+    async def waiting():
+        try:await asyncio.Future()
+        finally:stopped.set();store.update(eid,'music_brief','Cancelled')
+    task=asyncio.create_task(waiting());engine.running[(eid,'music_brief')]=task
+    await asyncio.sleep(0)
+    assert not engine.priorities_locked(eid,'music_brief')
+    await engine.change_priorities(eid,'music_brief',ORDER)
+    assert stopped.is_set() and task.cancelled()
+    assert store.task(eid,'music_brief')['status']=='Pending'
+    assert store.task(eid,'music_brief')['data']['feedback']=='keep direction'
+    assert store.config(eid)['agent_priorities']['music_brief']==ORDER
+
+@pytest.mark.asyncio
+async def test_waiting_client_with_delivered_identity_remains_locked(configured):
+    engine,store,eid=configured
+    store.update(eid,'music_brief','Waiting for Client',data={'identity':{'pane':'t1'}})
+    assert engine.priorities_locked(eid,'music_brief')
+    with pytest.raises(PriorityLockedError):await engine.change_priorities(eid,'music_brief',ORDER)
