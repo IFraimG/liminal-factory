@@ -14,7 +14,7 @@ public static class LiminalScene {
         public bool include_figure=false;
         public Surface[] custom_materials;public Part[] custom_objects;public Illumination[] custom_lights;
         public float[] sky_color={.025f,.03f,.025f},ambient_color={.32f,.33f,.28f},fog_color={.12f,.12f,.09f},weather_area={60,30,80};
-        public string weather="none";public float weather_amount=.5f;
+        public string weather="none";public float weather_amount=.5f,weather_size_multiplier=1,weather_speed_multiplier=1,weather_wind=-.35f,light_gain=1;
     }
     static int materialId; static Transform shapeParent;
     static Material Mat(string name,Color color,float roughness=.85f,bool emissive=false) {
@@ -109,10 +109,10 @@ public static class LiminalScene {
             shapeParent=null;
         }
     }
-    [Serializable] public class Surface {public string name,texture="flat";public float[] color;public float roughness=.85f,metallic=0,emission=0,texture_scale=1;}
+    [Serializable] public class Surface {public string name,texture="flat";public float[] color;public float roughness=.85f,metallic=0,emission=0,texture_scale=1,detail_strength=1;}
     [Serializable] public class Vertex {public float x,y,z;}
     [Serializable] public class Part {public string name,primitive,material,alternate_material="";public float[] position,scale,rotation,step,jitter;public int[] repeat;public float alternate_probability=0;public Vertex[] vertices;public int[] triangles;}
-    [Serializable] public class Illumination {public string name,kind;public float[] position,rotation,color;public float intensity,range=15,spot_angle=60;}
+    [Serializable] public class Illumination {public string name,kind;public float[] position,rotation,color;public float intensity,range=15,spot_angle=60,shadow_strength=1;}
     static Vector3 V(float[] a) {return new Vector3(a[0],a[1],a[2]);}
     static Color C(float[] a) {return new Color(a[0],a[1],a[2],1);}
     static Mesh CustomMesh(Part part,int id) {
@@ -147,13 +147,13 @@ public static class LiminalScene {
         }
     }
     static void Generic(Config c) {
-        RenderSettings.ambientLight=C(c.ambient_color);RenderSettings.fogColor=C(c.fog_color);RenderSettings.fogDensity=c.fog_density;
+        RenderSettings.ambientLight=C(c.ambient_color)*c.light_gain;RenderSettings.fogColor=C(c.fog_color);RenderSettings.fogDensity=c.fog_density;
         QualitySettings.pixelLightCount=8;QualitySettings.shadows=ShadowQuality.All;QualitySettings.shadowResolution=ShadowResolution.Medium;
         var materials=new System.Collections.Generic.Dictionary<string,Material>();
         foreach(var surface in c.custom_materials) {
             var m=Mat(surface.name,C(surface.color),surface.roughness,surface.emission>0);
             m.SetFloat("_Metallic",surface.metallic);if(m.HasProperty("_Smoothness"))m.SetFloat("_Smoothness",1-surface.roughness);
-            if(surface.emission>0)m.SetColor("_EmissionColor",C(surface.color)*surface.emission);
+            if(surface.emission>0)m.SetColor("_EmissionColor",C(surface.color)*surface.emission*c.light_gain);
             if(surface.texture!="flat") {
                 var tex=new Texture2D(128,128,TextureFormat.RGB24,true);tex.name=surface.name+" surface detail";tex.wrapMode=TextureWrapMode.Repeat;
                 for(int y=0;y<128;y++)for(int x=0;x<128;x++) {
@@ -166,7 +166,7 @@ public static class LiminalScene {
                     if(surface.texture=="snow")detail=.9f+coarse*.08f;
                     if(surface.texture=="bark")detail=.5f+.32f*Mathf.PerlinNoise(x*.12f,y*.018f)+.12f*Mathf.Abs(Mathf.Sin(x*.7f+coarse*4));
                     if(surface.texture=="panel") {detail=.7f+coarse*.22f;if(x%64<2||y%64<2)detail*=.55f;}
-                    tex.SetPixel(x,y,new Color(n*detail,n*detail,n*detail));
+                    float value=Mathf.Clamp01(Mathf.LerpUnclamped(1,n*detail,surface.detail_strength));tex.SetPixel(x,y,new Color(value,value,value));
                 }
                 tex.Apply();AssetDatabase.CreateAsset(tex,$"Assets/LiminalGenerated/detail{materialId}.asset");m.mainTexture=tex;m.mainTextureScale=Vector2.one*surface.texture_scale;
             }
@@ -189,7 +189,7 @@ public static class LiminalScene {
         }
         foreach(var source in c.custom_lights) {
             var light=new GameObject(source.name).AddComponent<Light>();light.transform.position=V(source.position);light.transform.rotation=Quaternion.Euler(V(source.rotation));
-            light.type=source.kind=="directional"?LightType.Directional:source.kind=="spot"?LightType.Spot:LightType.Point;light.color=C(source.color);light.intensity=source.intensity;light.range=source.range;light.spotAngle=source.spot_angle;light.shadows=LightShadows.Soft;
+            light.type=source.kind=="directional"?LightType.Directional:source.kind=="spot"?LightType.Spot:LightType.Point;light.color=C(source.color);light.intensity=source.intensity*c.light_gain;light.range=source.range;light.spotAngle=source.spot_angle;light.shadows=LightShadows.Soft;light.shadowStrength=source.shadow_strength;
         }
     }
     static ParticleSystem Weather(Config c,Vector3 origin) {
@@ -197,9 +197,9 @@ public static class LiminalScene {
         var system=new GameObject(c.weather+" atmosphere").AddComponent<ParticleSystem>();system.Stop(true,ParticleSystemStopBehavior.StopEmittingAndClear);system.useAutoRandomSeed=false;system.randomSeed=(uint)(c.seed+1);
         system.transform.position=origin+new Vector3(0,c.weather_area[1]*.35f,15);
         var main=system.main;main.loop=true;main.playOnAwake=false;main.maxParticles=3000;main.startLifetime=35;main.startSpeed=0;main.simulationSpace=ParticleSystemSimulationSpace.World;
-        main.startSize=c.weather=="rain"?.035f:c.weather=="dust"?.035f:.065f;main.startColor=new Color(.85f,.87f,.88f,c.weather=="dust"?.2f:.65f);
+        main.startSize=(c.weather=="rain"?.035f:c.weather=="dust"?.035f:.065f)*c.weather_size_multiplier;main.startColor=new Color(.85f,.87f,.88f,c.weather=="dust"?.2f:.65f);
         var shape=system.shape;shape.shapeType=ParticleSystemShapeType.Box;shape.scale=V(c.weather_area);
-        var velocity=system.velocityOverLifetime;velocity.enabled=true;velocity.space=ParticleSystemSimulationSpace.World;velocity.x=-.35f;velocity.y=c.weather=="rain"?-9:c.weather=="dust"?-.08f:-1.1f;velocity.z=.15f;
+        var velocity=system.velocityOverLifetime;velocity.enabled=true;velocity.space=ParticleSystemSimulationSpace.World;velocity.x=c.weather_wind;velocity.y=(c.weather=="rain"?-9:c.weather=="dust"?-.08f:-1.1f)*c.weather_speed_multiplier;velocity.z=.15f;
         var emission=system.emission;emission.rateOverTime=70*c.weather_amount;
         var shader=Shader.Find("Particles/Standard Unlit");if(!shader)throw new Exception("Particle shader unavailable");
         var material=new Material(shader);material.name=c.weather+" particles";material.SetFloat("_Mode",2);material.SetInt("_SrcBlend",(int)UnityEngine.Rendering.BlendMode.SrcAlpha);material.SetInt("_DstBlend",(int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);material.SetInt("_ZWrite",0);material.renderQueue=3000;

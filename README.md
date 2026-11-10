@@ -612,3 +612,7 @@ API: `POST /episodes/{id}/unity-blueprint` с `{"feedback":"Уточнения"}
 When a provider quota is unknown, the first agent in the saved step order is used; known values below 5% still cause a skip. Unknown is never displayed as a measured percentage. A missing or unready CLI may still require the user to open its session and resolve permissions.
 
 Custom scenes also support bounded custom `mesh` geometry (up to 256 unit-box vertices and 512 triangles per group, shared between repetitions, at most 12000 vertices across groups) and deterministic procedural `bare_tree` geometry (scale sets crown width, height and depth; position is the centre) and `bark`/`panel` material patterns. Each tree counts as 32 geometry instances against the existing 6000-instance limit. These procedural tools are approximations; they do not reconstruct photographic geometry or textures. Mesh UVs are planar and materials remain procedural; no external assets are downloaded. Existing scenes remain compatible.
+
+### Управление светом и атмосферой сцены
+
+В описании `custom_scene` агент может задавать `light_gain` (0.25–4) для общей силы окружающего света, источников и свечения материалов; у отдельных источников — `shadow_strength` (0–1), у материалов — `detail_strength` (0–2). Для снега, дождя и пыли доступны `weather_size_multiplier`, `weather_speed_multiplier` и `weather_wind`. Значения по умолчанию сохраняют прежний вид. Эти средства не добавляют фотографические текстуры или автоматическую реконструкцию сцены.
