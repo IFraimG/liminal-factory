@@ -142,6 +142,7 @@ class SceneMaterial(BaseModel):
     emission: float=Field(default=0,ge=0,le=5)
     texture: Literal['flat','plaster','concrete','brick','wood','metal','fabric','snow','asphalt','bark','panel']='flat'
     texture_scale: float=Field(default=1,gt=0,le=50)
+    detail_strength: float=Field(default=1,ge=0,le=2)
     @field_validator('color')
     @classmethod
     def rgb(cls,v):
@@ -194,6 +195,7 @@ class SceneLight(BaseModel):
     intensity: float=Field(ge=0,le=8)
     range: float=Field(default=15,gt=0,le=150)
     spot_angle: float=Field(default=60,ge=1,le=170)
+    shadow_strength: float=Field(default=1,ge=0,le=1)
     @model_validator(mode='after')
     def bounded(self):
         import math
@@ -226,6 +228,10 @@ class SceneSpec(BaseModel):
     fog_color: list[float]=Field(default_factory=lambda:[.12,.12,.09],min_length=3,max_length=3)
     weather: Literal['none','snow','rain','dust']='none'
     weather_amount: float=Field(default=.5,ge=0,le=1)
+    weather_size_multiplier: float=Field(default=1,ge=.1,le=10)
+    weather_speed_multiplier: float=Field(default=1,ge=.1,le=10)
+    weather_wind: float=Field(default=-.35,ge=-10,le=10)
+    light_gain: float=Field(default=1,ge=.25,le=4)
     weather_area: list[float]=Field(default_factory=lambda:[60,30,80],min_length=3,max_length=3)
     @model_validator(mode='after')
     def custom_scene_valid(self):

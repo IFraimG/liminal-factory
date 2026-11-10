@@ -178,3 +178,17 @@ def test_custom_mesh_and_procedural_tree_validation():
     with pytest.raises(ValueError,match='budget'):SceneSpec(**tree)
     tree['custom_objects'][0]['repeat']=[2,1,1]
     assert SceneSpec(**tree).custom_objects[0].primitive=='bare_tree'
+
+
+def test_fidelity_controls_are_bounded_and_old_scenes_keep_defaults():
+    data=custom_scene(); old=SceneSpec(**data)
+    assert old.light_gain==1 and old.weather_size_multiplier==1 and old.weather_speed_multiplier==1
+    assert old.custom_materials[0].detail_strength==1
+    data.update(light_gain=2,weather_size_multiplier=1.5,weather_speed_multiplier=.5,weather_wind=2)
+    data['custom_materials'][0]['detail_strength']=1.5
+    data['custom_lights']=[{'name':'lamp','kind':'point','position':[0,2,0],'color':[1,1,1],'intensity':2,'shadow_strength':.4}]
+    spec=SceneSpec(**data)
+    assert spec.light_gain==2 and spec.custom_lights[0].shadow_strength==.4
+    for field,value in [('light_gain',5),('weather_size_multiplier',0),('weather_speed_multiplier',20),('weather_wind',11)]:
+        bad=dict(data);bad[field]=value
+        with pytest.raises(ValueError):SceneSpec(**bad)
