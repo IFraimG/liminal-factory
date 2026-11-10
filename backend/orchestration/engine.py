@@ -67,7 +67,26 @@ class Engine:
             self.store.execute('INSERT OR REPLACE INTO cache VALUES(?,?,?)',('agent-quota:'+provider,json.dumps(data),now))
         self.quota.latest.pop(provider,None);self.wake.set()
     def priorities_locked(self,e,n):
+        task=self.store.task(e,n)
+        if task['status']=='Waiting for Client' and not task['data'].get('identity') and not task['data'].get('revision_agent'):return False
         return (e,n) in self.running or self.store.task(e,n)['status'] in ACTIVE_STATUSES
+    async def change_priorities(self,e,n,order):
+        if n not in self.workflow(e) or n in GATES:raise ValueError('Choose an executable step; approval belongs to you')
+        order=validate_order(order)
+        if self.priorities_locked(e,n):raise PriorityLockedError('Stop the active step before changing its agent priorities')
+        if self.store.task(e,n)['status']!='Waiting for Client':return self.set_priorities(e,n,order)
+        # No prompt identity exists: cancel synchronously before yielding so the
+        # waiting adapter cannot wake up and send with the superseded order.
+        running=self.running.get((e,n))
+        if running:
+            running.cancel()
+            await asyncio.gather(running,return_exceptions=True)
+            if self.running.get((e,n)) is running:self.running.pop((e,n),None)
+        self.store.update(e,n,'Cancelled')
+        saved=self.set_priorities(e,n,order)
+        await self.retry(e,n)
+        self.store.log(e,n,'Client wait cancelled before prompt delivery; restarting with the saved agent priority.')
+        return saved
     def set_priorities(self,e,n,order):
         if n not in self.workflow(e) or n in GATES:raise ValueError('Choose an executable step; approval belongs to you')
         order=validate_order(order);config=self.store.config(e)

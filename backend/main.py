@@ -209,7 +209,7 @@ async def recording_duration(e:str,request:Request):
 
 @app.put('/episodes/{e}/tasks/{n}/priorities')
 async def task_priorities(e:str,n:str,request:Request):
-    try:order=engine.set_priorities(e,n,(await request.json()).get('order'))
+    try:order=await engine.change_priorities(e,n,(await request.json()).get('order'))
     except PriorityLockedError as exc:raise HTTPException(409,str(exc)) from None
     return {'order':order}
 
