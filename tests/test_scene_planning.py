@@ -178,3 +178,12 @@ def test_custom_mesh_and_procedural_tree_validation():
     with pytest.raises(ValueError,match='budget'):SceneSpec(**tree)
     tree['custom_objects'][0]['repeat']=[2,1,1]
     assert SceneSpec(**tree).custom_objects[0].primitive=='bare_tree'
+
+
+def test_ground_continuation_defaults_to_auto_and_can_be_disabled():
+    data=custom_scene()
+    assert SceneSpec(**data).ground_continuation=='auto'
+    data['ground_continuation']='off'
+    assert SceneSpec(**data).ground_continuation=='off'
+    data['ground_continuation']='unknown'
+    with pytest.raises(ValueError):SceneSpec(**data)

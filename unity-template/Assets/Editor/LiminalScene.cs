@@ -14,7 +14,7 @@ public static class LiminalScene {
         public bool include_figure=false;
         public Surface[] custom_materials;public Part[] custom_objects;public Illumination[] custom_lights;
         public float[] sky_color={.025f,.03f,.025f},ambient_color={.32f,.33f,.28f},fog_color={.12f,.12f,.09f},weather_area={60,30,80};
-        public string weather="none";public float weather_amount=.5f;
+        public string weather="none",ground_continuation="auto";public float weather_amount=.5f;
     }
     static int materialId; static Transform shapeParent;
     static Material Mat(string name,Color color,float roughness=.85f,bool emissive=false) {
@@ -173,7 +173,15 @@ public static class LiminalScene {
             materials.Add(surface.name,m);
         }
         int meshId=0;
+        Part ground=null;float groundArea=0;
         foreach(var part in c.custom_objects) {
+            // A broad, thin, unrotated box below the camera is an existing floor/terrain slab.
+            // Do not infer ground from ceilings, small props, arbitrary meshes or rotated terrain.
+            if(part.primitive=="box" && part.scale[0]>=20 && part.scale[2]>=20 && part.scale[1]<=3
+                && Mathf.Abs(part.rotation[0])<.01f && Mathf.Abs(part.rotation[1])<.01f && Mathf.Abs(part.rotation[2])<.01f
+                && part.repeat[0]==1 && part.repeat[1]==1 && part.repeat[2]==1
+                && part.position[1]+part.scale[1]*.5f<c.camera_y-.1f
+                && part.scale[0]*part.scale[2]>groundArea) {ground=part;groundArea=part.scale[0]*part.scale[2];}
             var primitive=part.primitive=="sphere"?PrimitiveType.Sphere:part.primitive=="cylinder"?PrimitiveType.Cylinder:part.primitive=="capsule"?PrimitiveType.Capsule:part.primitive=="quad"?PrimitiveType.Quad:PrimitiveType.Cube;
             var mesh=part.primitive=="mesh"?CustomMesh(part,meshId++):null;
             for(int x=0;x<part.repeat[0];x++)for(int y=0;y<part.repeat[1];y++)for(int z=0;z<part.repeat[2];z++) {
@@ -186,6 +194,11 @@ public static class LiminalScene {
                 var o=Shape(primitive,part.name,pos,V(part.scale),material);o.transform.rotation=Quaternion.Euler(V(part.rotation));o.isStatic=true;
                 var collider=o.GetComponent<Collider>();if(collider)UnityEngine.Object.DestroyImmediate(collider);
             }
+        }
+        if(ground!=null && c.ground_continuation!="off") {
+            float top=ground.position[1]+ground.scale[1]*.5f-.03f;
+            var fill=Box("Ground continuation beneath scene",new Vector3(c.camera_x,top-.05f,c.camera_z),new Vector3(3000,.1f,3000),materials[ground.material]);
+            fill.isStatic=true;var collider=fill.GetComponent<Collider>();if(collider)UnityEngine.Object.DestroyImmediate(collider);
         }
         foreach(var source in c.custom_lights) {
             var light=new GameObject(source.name).AddComponent<Light>();light.transform.position=V(source.position);light.transform.rotation=Quaternion.Euler(V(source.rotation));

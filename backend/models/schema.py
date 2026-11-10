@@ -221,6 +221,7 @@ class SceneSpec(BaseModel):
     custom_materials: list[SceneMaterial]=Field(default_factory=list,max_length=64)
     custom_objects: list[SceneObject]=Field(default_factory=list,max_length=400)
     custom_lights: list[SceneLight]=Field(default_factory=list,max_length=32)
+    ground_continuation: Literal['auto','off']='auto'
     sky_color: list[float]=Field(default_factory=lambda:[.025,.03,.025],min_length=3,max_length=3)
     ambient_color: list[float]=Field(default_factory=lambda:[.32,.33,.28],min_length=3,max_length=3)
     fog_color: list[float]=Field(default_factory=lambda:[.12,.12,.09],min_length=3,max_length=3)
